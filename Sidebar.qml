@@ -2494,7 +2494,10 @@ Item {
       }
 
       // -- auto-hide: tucked away off the left edge until the pointer touches it --
-      readonly property bool autoHide: root.setting("general", "autohide") === true || root.barHidden
+      // Only the setting tucks the panel; the `omarchy toggle bar` flag used to
+      // force this too, so a stale bar-off flag made the panel auto-hide while
+      // auto-hide was off.
+      readonly property bool autoHide: root.setting("general", "autohide") === true
       readonly property bool keepOpen: (root.searching && root.searchMonitor === win.monitorName) || win.qsHere || win.trayHere
         || root.dockedPanel !== null || win.editHere || win.menuItem !== null || win.dragItem !== null || win.overviewHere || win.fsLeaving
       property bool revealed: false
