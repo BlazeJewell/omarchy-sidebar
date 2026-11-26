@@ -51,8 +51,9 @@ everything that's open.
   is always in the same spot.
 - **Familiar keys.** Super+Space for the menu, Super for the overview, Super+Alt+1…9 for
   pinned apps. Omarchy's own panel shortcuts (Super+Ctrl+A/B/D/N/P…) open inside the panel.
-- **Arranged in place.** *Edit sidebar* outlines each section on the panel itself, so you can
-  reorder, resize, hide and add sections where you see them.
+- **Arranged in place.** *Edit sidebar* (the *Sidebar* row in quick settings) happens inside the panel: it outlines each section, and
+  clicking one opens its settings right under it. Reorder, resize, hide and add sections where
+  you see them; the whole sidebar's settings open from the top of the panel.
 
 ### Simplicity
 
@@ -117,7 +118,7 @@ another screen. Fullscreen apps and games cover their monitor's panel until you 
 ![Tablet: docked in landscape, tucked in portrait](docs/mock-tablet.png)
 
 In landscape, a narrower panel stays docked. In portrait, turn on auto-hide
-(*Edit sidebar › Whole sidebar*): the panel tucks into a 4 px edge and slides over the app when you
+(*Edit sidebar › Sidebar*): the panel tucks into a 4 px edge and slides over the app when you
 reach for it, so the app keeps the full width.
 
 ### Phone-size screens (concept)

@@ -470,6 +470,87 @@ Item {
     if (memTotal > 0) mem = 100 * (1 - memAvail / memTotal)
   }
 
+  // The system section's readings ("data points"): each can be shown or not, small
+  // (inline) / half / full width, and drawn as a number, a bar or a graph. Their
+  // order and options are system.items in the settings (dragged in edit mode).
+  readonly property var statIds: ["cpu", "mem", "disk", "gpu", "vram", "gpuTemp", "down", "up"]
+  readonly property var statShort: ({ cpu: "CPU", mem: "MEM", disk: "DSK", gpu: "GPU", vram: "VRM", gpuTemp: "TMP", down: "DOWN", up: "UP" })
+  readonly property var statLong: ({ cpu: "CPU", mem: "Memory", disk: "Disk", gpu: "GPU usage", vram: "GPU memory", gpuTemp: "GPU temperature", down: "Download", up: "Upload" })
+  property var statHist: ({})          // id -> the last 24 readings
+  function statValue(id) {
+    if (id === "cpu") return root.cpu
+    if (id === "mem") return root.mem
+    if (id === "disk") return root.disk
+    if (id === "gpu") return root.gpu
+    if (id === "vram") return root.vramTotal > 0 ? 100 * root.vramUsed / root.vramTotal : 0
+    if (id === "gpuTemp") return root.gpuTemp
+    if (id === "down") return root.rxRate
+    if (id === "up") return root.txRate
+    return 0
+  }
+  function isRate(id) { return id === "down" || id === "up" }
+  // [figure, unit]
+  function statText(id) {
+    var v = root.statValue(id)
+    if (root.isRate(id)) return root.rateParts(v)
+    return [Math.round(v).toString(), id === "gpuTemp" ? "°" : "%"]
+  }
+  // the scale a bar or graph is drawn against (rates: the recent peak)
+  function statPeak(id, hist) { return root.isRate(id) ? Math.max.apply(null, [1].concat(hist || [])) : 100 }
+  function statHot(id) { return !root.isRate(id) && root.statValue(id) >= 85 }
+  function pushStatHist() {
+    var h = {}
+    root.statIds.forEach(function(id) { h[id] = (root.statHist[id] || []).concat([root.statValue(id)]).slice(-24) })
+    root.statHist = h
+  }
+  readonly property var systemItems: {
+    var saved = root.setting("system", "items")
+    saved = Array.isArray(saved) ? saved : []
+    var out = [], seen = {}
+    saved.forEach(function(it) { if (it && root.statIds.indexOf(it.id) !== -1 && !seen[it.id]) { seen[it.id] = true; out.push(it) } })
+    root.statIds.forEach(function(id) { if (!seen[id]) out.push({ id: id }) })
+    return out.map(function(it) {
+      var net = root.isRate(it.id)
+      return {
+        id: it.id,
+        // older settings: one switch per reading, "network" for both rates, "netGraph" for their graphs
+        show: it.show !== undefined ? it.show : (net ? root.setting("system", "network") !== false : root.setting("system", it.id) !== false),
+        // width as a share of the section (5 = a fifth … 1 = all of it), height in rows;
+        // older "size": small = a third, one row; half / full = two rows
+        w: [5, 3, 2, 1].indexOf(it.w) !== -1 ? it.w : ({ small: 3, half: 2, full: 1 })[it.size || (net ? "half" : "small")] || 3,
+        h: [1, 2, 3].indexOf(it.h) !== -1 ? it.h : ((it.size || (net ? "half" : "small")) === "small" ? 1 : 2),
+        style: it.style || (net ? (root.setting("system", "netGraph") !== false ? "graph" : "value") : "value"),
+        avail: ["gpu", "vram", "gpuTemp"].indexOf(it.id) === -1 || root.gpuFound
+      }
+    })
+  }
+  function systemItemsPlain() { return root.systemItems.map(function(it) { return { id: it.id, show: it.show, w: it.w, h: it.h, style: it.style } }) }
+  function setSystemItem(id, key, value) {
+    var list = root.systemItemsPlain()
+    list.forEach(function(it) { if (it.id === id) it[key] = value })
+    root.setSetting("system", "items", list)
+  }
+  // move one reading just before (or after) another one
+  function moveSystemItem(id, targetId, after) {
+    var list = root.systemItemsPlain()
+    var from = list.findIndex(function(it) { return it.id === id })
+    if (from < 0 || id === targetId) return
+    var it = list.splice(from, 1)[0]
+    var to = list.findIndex(function(x) { return x.id === targetId })
+    if (to < 0) return
+    list.splice(after ? to + 1 : to, 0, it)
+    root.setSetting("system", "items", list)
+  }
+  // step a reading one place earlier (-1) or later (+1) among the ones shown
+  function nudgeSystemItem(id, dir) {
+    var seen = root.systemItems.filter(function(x) { return x.avail })
+    var i = seen.findIndex(function(x) { return x.id === id })
+    var j = i + dir
+    if (i < 0 || j < 0 || j >= seen.length) return
+    root.moveSystemItem(id, seen[j].id, dir > 0)
+  }
+  property string systemPick: "cpu"    // the reading picked in the editor
+
   function rateParts(bytesPerSec) {
     var bits = bytesPerSec * 8
     if (bits >= 1e9) return [(bits / 1e9).toFixed(1), "Gbps"]
@@ -562,6 +643,7 @@ Item {
                + " " + Math.round((Number(fvGpuTotal.text()) || 0) / 1048576) + " " + temp)
     } else if (root.gpuNvidia && !nvidiaProc.running) nvidiaProc.running = true
     root.parseStats(out.join("\n"))
+    root.pushStatHist()
   }
   Timer {
     interval: Math.max(1, root.setting("system", "refresh")) * 1000; running: true; repeat: true; triggeredOnStart: true
@@ -2031,7 +2113,7 @@ Item {
   // ---- edit mode ---------------------------------------------------------------
   property bool editing: false
   property string editMonitor: ""
-  property string editSection: "apps"
+  property string editSection: ""      // "" nothing open, "_sidebar" the whole sidebar's settings
   readonly property var editSections: [
     { id: "clock", label: "CLOCK" }, { id: "status", label: "STATUS" }, { id: "system", label: "SYSTEM" }, { id: "workspaces", label: "WORKSPACES" },
     { id: "search", label: "SEARCH" }, { id: "media", label: "MEDIA" }, { id: "notifications", label: "NOTIFICATIONS" },
@@ -2047,6 +2129,7 @@ Item {
     root.editSnapshot = JSON.parse(JSON.stringify(root.userSettings))
     root.editHistory = []
     root.profileNaming = false
+    root.editSection = ""
     root.editing = true
   }
   property var editSnapshot: ({})
@@ -2100,7 +2183,7 @@ Item {
     if (Array.isArray(next.order)) next.order = next.order.filter(function(x) { return x !== id })
     delete next[id]
     root.saveSettings(next)
-    if (root.editSection === id) root.editSection = "apps"
+    if (root.editSection === id) root.editSection = ""
   }
   readonly property var defaultSectionDesc: ({ tray: "Tray icons of running apps", status: "Indicators, update available, keyboard layout and battery", media: "Now playing, with play/pause, skip and seek", notifications: "Your latest notifications, and Do not disturb" })
   property bool addOpen: false
@@ -2109,7 +2192,7 @@ Item {
     if (!id || id === "bottom") return
     if (String(id).indexOf("w:") === 0) root.removeWidgetSection(id)
     else root.setSetting(id, "show", false)
-    if (root.editSection === id) root.editSection = "apps"
+    if (root.editSection === id) root.editSection = ""
   }
 
   // The bar handed to widgets living in a section: same as the bottom row's,
@@ -2351,6 +2434,21 @@ Item {
 
   // ---- editor history, reset, profiles ---------------------------------------------
   property var editHistory: []
+  // The open section's own Cancel / Save: Cancel puts back what it was when the
+  // section was opened, Save keeps the changes; both close it. (Nothing is written
+  // to disk until the editor's own Save.)
+  property string formSnapshot: ""
+  onEditSectionChanged: root.formSnapshot = root.editSection !== "" ? JSON.stringify(root.userSettings) : ""
+  function closeForm(keep) {
+    if (!keep && root.formSnapshot !== "" && JSON.stringify(root.userSettings) !== root.formSnapshot)
+      root.saveSettings(JSON.parse(root.formSnapshot))
+    root.editSection = ""
+  }
+  readonly property string editSectionLabel: {
+    if (root.editSection === "_sidebar") return "WHOLE SIDEBAR"
+    var e = root.editSections.filter(function(x) { return x.id === root.editSection })[0]
+    return e ? e.label + (root.editSection.indexOf("w:") === 0 ? " · WIDGET" : "") : ""
+  }
   function undoEdit() {
     if (root.editHistory.length === 0) return
     var prev = root.editHistory[root.editHistory.length - 1]
@@ -2420,6 +2518,7 @@ Item {
       }
       WlrLayershell.layer: win.lifted ? WlrLayer.Overlay : WlrLayer.Top
       WlrLayershell.keyboardFocus: (root.searching && root.searchMonitor === win.monitorName) || (win.qsHere && root.pwSsid !== "")
+                                   || (win.editHere && (root.addOpen || root.profileNaming))
         ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
       anchors { top: true; bottom: true; left: true }
       implicitWidth: root.sidebarWidth
@@ -3580,10 +3679,106 @@ Item {
         }
         return { holder: win.pinHolders[id], slot: win.pinSlots[id] }
       }
+      // ---- the grid ------------------------------------------------------------
+      // The sidebar is 12 columns wide. A section takes a quarter, a third, half,
+      // two thirds, three quarters or all of it; sections that fit side by side
+      // share a row (a "lane"), in order. Every section sits in a cell, which can
+      // also draw a card behind it, pad it and align it within its row. Pinned
+      // sections always take the full width (and skip the cell).
+      readonly property int gridCols: 12
+      readonly property real gridGap: 14
+      function sectionSpan(id) {
+        if (win.pinsOn && win.pinnedIds.indexOf(id) !== -1) return 12
+        var v = root.setting(id, "span")
+        return [3, 4, 6, 8, 9, 12].indexOf(v) !== -1 ? v : 12
+      }
+      // what the lanes depend on: re-sort the column when it changes
+      readonly property string laneKey: root.sectionOrder.map(function(id) {
+        return id + ":" + win.sectionSpan(id) + ":" + (root.sectionShown(id) || root.editing ? 1 : 0) + ":" + (win.pinnedIds.indexOf(id) !== -1 ? 1 : 0)
+      }).join(",")
+      onLaneKeyChanged: Qt.callLater(win.applySectionOrder)
+      property var laneCells: ({})
+      // the room the app list would stretch into when it has a set height (or is
+      // hidden), so the rest doesn't spread out and the bottom row stays at the bottom
+      Item {
+        id: laneStretch
+        parent: slotParking
+        readonly property var appsCell: win.laneCells["apps"] || null
+        visible: !(appsCell && appsCell.parent && appsCell.parent !== slotParking && appsCell.fills)
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        Layout.preferredHeight: 0
+      }
+      property var lanePool: []
+      Component {
+        id: laneComp
+        RowLayout {
+          id: laneRow
+          Layout.fillWidth: true
+          // the app list stretches to the bottom row; its lane stretches with it
+          Layout.fillHeight: { var c = laneRow.children; for (var i = 0; i < c.length; i++) if (c[i].fills) return true; return false }
+          spacing: win.gridGap
+          property Item filler: Item { Layout.fillWidth: true; Layout.preferredHeight: 0 }
+        }
+      }
+      Component {
+        id: cellComp
+        Item {
+          id: cell
+          property string sid: ""
+          readonly property alias col: cellCol
+          readonly property bool hasContent: cellCol.implicitHeight > 0
+          readonly property real laneW: mainCol.width   // not the lane's: that would size itself from the cells
+          // the app list (at "fit content") takes the room that's left
+          readonly property bool fills: sid === "apps" && root.heightMode("apps") === "auto"
+          readonly property bool card: root.setting(sid, "card") === true
+          readonly property real pad: { var v = root.setting(sid, "pad"); return typeof v === "number" ? v : (card ? 10 : 0) }
+          readonly property string valign: root.setting(sid, "align") || "top"
+          readonly property real contentH: hasContent ? cellCol.implicitHeight + 2 * pad : 0
+          Layout.alignment: valign === "middle" ? Qt.AlignVCenter : valign === "bottom" ? Qt.AlignBottom : Qt.AlignTop
+          Layout.preferredWidth: hasContent ? Math.max(0, win.sectionSpan(sid) * (laneW + win.gridGap) / win.gridCols - win.gridGap) : 0
+          Layout.preferredHeight: contentH
+          Layout.minimumHeight: fills ? contentH : 0
+          Layout.fillHeight: fills
+          Rectangle {
+            visible: cell.card && cell.hasContent
+            anchors.fill: parent
+            radius: 8
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.045)
+            border.width: 1
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.09)
+          }
+          ColumnLayout {
+            id: cellCol
+            x: cell.pad; y: cell.pad
+            width: Math.max(0, cell.width - 2 * cell.pad)
+            height: cell.fills ? Math.max(implicitHeight, cell.height - 2 * cell.pad) : implicitHeight
+            spacing: mainCol.spacing
+          }
+        }
+      }
+      function laneCell(id) {
+        if (!win.laneCells[id]) {
+          var c = cellComp.createObject(slotParking, { sid: id })
+          var cs = Object.assign({}, win.laneCells); cs[id] = c; win.laneCells = cs
+        }
+        return win.laneCells[id]
+      }
+      function lane(i) {
+        while (win.lanePool.length <= i) {
+          var l = laneComp.createObject(slotParking)
+          l.filler.parent = slotParking
+          win.lanePool = win.lanePool.concat([l])
+        }
+        return win.lanePool[i]
+      }
+
       // where the separator above the bottom row is in the window (the overlays
       // that open above the bottom row sit on it); it may be scrolled or pinned
       readonly property real bottomEdgeY: {
         var dep = sideFlick.contentY + sideFlick.height + mainCol.height + bottomSep.y + win.pinRev + (secBottom.visible ? 1 : 0)
+        // it sits in a grid cell (padded) in a lane: follow each of those as they move
+        for (var up = bottomSep.parent; up && up !== mainCol && up !== win.contentItem; up = up.parent) dep += up.y + up.height
         if (!secBottom.visible || !bottomSep.parent) return sideFlick.y + sideFlick.height
         return Math.min(sideFlick.y + sideFlick.height, bottomSep.mapToItem(win.contentItem, 0, 0).y - mainCol.spacing)
       }
@@ -3597,13 +3792,37 @@ Item {
         win.trimmedIds.forEach(function(id) { if (blocks[id]) { trimmed[id] = { parts: blocks[id], box: win.trimBox(id) }; blocks[id] = [trimmed[id].box] } })
         var items = []
         var pinned = {}   // id -> its parts, drawn in its holder above the column
+        var lanes = []    // [{ lane, cells: [{ cell, parts }] }]
+        var open = null, used = 0, stretchAt = -1, bottomAt = -1
+        function closeLane() {
+          if (!open) return
+          var l = { lane: win.lane(lanes.length), cells: open.map(function(id) { return { cell: win.laneCell(id), parts: blocks[id] } }) }
+          lanes.push(l)
+          if (open.indexOf("bottom") !== -1) bottomAt = items.length
+          items.push(l.lane)
+          if (open.indexOf("apps") !== -1) stretchAt = items.length
+          open = null; used = 0
+        }
         root.sectionOrder.forEach(function(id) {
-          if (win.pinsOn && win.pinnedIds.indexOf(id) !== -1 && blocks[id]) {
+          if (!blocks[id]) return
+          if (win.pinsOn && win.pinnedIds.indexOf(id) !== -1) {
+            closeLane()
             var pp = win.pinParts(id)
             items.push(pp.slot)
             pinned[id] = { parts: blocks[id], holder: pp.holder }
-          } else (blocks[id] || []).forEach(function(it) { items.push(it) })
+            return
+          }
+          // hidden: no room in a lane, just parked (invisible) in the column
+          if (!(root.sectionShown(id) || root.editing)) { blocks[id].forEach(function(it) { items.push(it) }); return }
+          var sp = win.sectionSpan(id)
+          if (open && used + sp > win.gridCols) closeLane()
+          open = open || []
+          open.push(id); used += sp
+          if (used >= win.gridCols) closeLane()
         })
+        closeLane()
+        // the stretch goes where the app list ends (else just above the bottom row)
+        items.splice(stretchAt >= 0 ? stretchAt : (bottomAt >= 0 ? bottomAt : items.length), 0, laneStretch)
         var current = []
         for (var i = 0; i < mainCol.children.length; i++) current.push(mainCol.children[i])
         var holdersOk = Object.keys(pinned).every(function(id) {
@@ -3614,16 +3833,40 @@ Item {
           var c = trimmed[id].box.col.children
           return trimmed[id].parts.length === c.length && trimmed[id].parts.every(function(it, k) { return c[k] === it })
         })
-        var same = boxesOk && holdersOk && items.length === current.length && items.every(function(it, k) { return current[k] === it })
+        var lanesOk = lanes.every(function(l) {
+          var c = l.lane.children
+          if (c.length !== l.cells.length + 1 || c[c.length - 1] !== l.lane.filler) return false
+          return l.cells.every(function(x, k) {
+            var cc = x.cell.col.children
+            return c[k] === x.cell && x.parts.length === cc.length && x.parts.every(function(it, j) { return cc[j] === it })
+          })
+        })
+        var same = lanesOk && boxesOk && holdersOk && items.length === current.length && items.every(function(it, k) { return current[k] === it })
         if (same) return
         // placeholders and trim boxes no longer used go back out of the column
         for (var sid in win.pinSlots) if (items.indexOf(win.pinSlots[sid]) === -1) win.pinSlots[sid].parent = slotParking
         for (var bid in win.trimBoxes) if (!trimmed[bid]) win.trimBoxes[bid].parent = slotParking
+        var usedCells = {}
+        lanes.forEach(function(l) { l.cells.forEach(function(x) { usedCells[x.cell.sid] = true }) })
+        for (var cid in win.laneCells) if (!usedCells[cid]) win.laneCells[cid].parent = slotParking
+        for (var li = lanes.length; li < win.lanePool.length; li++) win.lanePool[li].parent = slotParking
+        laneStretch.parent = slotParking
         // a trimmed section's parts into its box first (the box may then be placed or pinned)
         for (var tid in trimmed) {
           trimmed[tid].parts.forEach(function(it) { it.parent = null })
           trimmed[tid].parts.forEach(function(it) { it.parent = trimmed[tid].box.col })
         }
+        // a lane's sections into their cells, the cells into the lane
+        lanes.forEach(function(l) {
+          l.cells.forEach(function(x) {
+            x.parts.forEach(function(it) { it.parent = null })
+            x.parts.forEach(function(it) { it.parent = x.cell.col })
+          })
+          l.cells.forEach(function(x) { x.cell.parent = null })
+          l.lane.filler.parent = null
+          l.cells.forEach(function(x) { x.cell.parent = l.lane })
+          l.lane.filler.parent = l.lane
+        })
         items.forEach(function(it) { it.parent = null })
         items.forEach(function(it) { it.parent = mainCol })
         for (var pid in pinned) {
@@ -3643,30 +3886,36 @@ Item {
       Item {
         id: editOverlay
         anchors.fill: parent
+        anchors.topMargin: win.editHere ? editHeader.y + editHeader.height + 2 : 0
+        clip: true
         z: 60
         visible: win.editHere
         // dragging a section to a new place
         property string dragId: ""
         property real dragY: 0
         property real grabY: 0
+        property real dragX: 0
+        property real grabX: 0
         property int dropIndex: -1
         property bool dropHide: false     // dragged past the sidebar's edge
-        function dropIndexAt(y) {
+        property string dropId: ""        // the section it'd land next to …
+        property bool dropAfter: false    // … after it rather than before
+        // the nearest outline; beside a part-width one it's left/right, else above/below
+        function dropAt(p) {
           var others = root.sectionOrder.filter(function(id) { return id !== editOverlay.dragId && editOverlay.boxes[id] })
-          var n = 0
+          var best = -1, bestD = 1e9
           for (var i = 0; i < others.length; i++) {
             var b = editOverlay.boxes[others[i]]
-            if (y > b.y + b.h / 2) n = i + 1
+            var dx = Math.max(b.x - p.x, 0, p.x - (b.x + b.w))
+            var dy = Math.max(b.y - p.y, 0, p.y - (b.y + b.h))
+            var d = dx + dy * 3
+            if (d < bestD) { bestD = d; best = i }
           }
-          return n
-        }
-        readonly property real dropLineY: {
-          if (dragId === "" || dropIndex < 0) return -100
-          var others = root.sectionOrder.filter(function(id) { return id !== editOverlay.dragId && editOverlay.boxes[id] })
-          if (others.length === 0) return -100
-          if (dropIndex === 0) return editOverlay.boxes[others[0]].y - 4
-          var b = editOverlay.boxes[others[Math.min(dropIndex, others.length) - 1]]
-          return b.y + b.h + 3
+          if (best < 0) { editOverlay.dropId = ""; return -1 }
+          var bb = editOverlay.boxes[others[best]]
+          var after = win.sectionSpan(others[best]) < win.gridCols ? p.x > bb.x + bb.w / 2 : p.y > bb.y + bb.h / 2
+          editOverlay.dropId = others[best]; editOverlay.dropAfter = after
+          return best + (after ? 1 : 0)
         }
         function finishDrag() {
           var id = editOverlay.dragId
@@ -3675,6 +3924,7 @@ Item {
           editOverlay.dragId = ""
           editOverlay.dropIndex = -1
           editOverlay.dropHide = false
+          editOverlay.dropId = ""
           if (!id) return
           if (hide) { root.removeSection(id); return }
           if (idx < 0) return
@@ -3692,7 +3942,7 @@ Item {
         }
         Rectangle {
           readonly property var bottomBox: editOverlay.boxes["bottom"]
-          visible: !!bottomBox && editOverlay.dragId === ""
+          visible: !!bottomBox && editOverlay.dragId === "" && root.editSection === ""
           z: 6
           // on the bottom section's top edge, between its label and its ×,
           // so it never covers the section above
@@ -3708,40 +3958,55 @@ Item {
             font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
           MouseArea { id: addMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.addOpen = !root.addOpen }
         }
+        // where the dragged section will land: a line on that side of its neighbour
         Rectangle {
-          visible: editOverlay.dragId !== "" && !editOverlay.dropHide
+          readonly property var b: editOverlay.boxes[editOverlay.dropId]
+          readonly property bool side: !!b && win.sectionSpan(editOverlay.dropId) < win.gridCols
+          visible: editOverlay.dragId !== "" && !editOverlay.dropHide && !!b
           z: 5
-          x: 10
-          width: parent.width - 20
-          height: 2
           radius: 1
-          y: editOverlay.dropLineY
           color: root.foreground
+          x: !b ? 0 : side ? (editOverlay.dropAfter ? b.x + b.w + 1 : b.x - 3) : b.x + 2
+          y: !b ? 0 : side ? b.y : (editOverlay.dropAfter ? b.y + b.h + 3 : b.y - 5)
+          width: !b ? 0 : side ? 2 : b.w - 4
+          height: !b ? 0 : side ? b.h : 2
         }
         // each section's extent, from the items that make it up
         function boxFor(items) {
-          var top = 1e9, bottom = -1e9
+          var top = 1e9, bottom = -1e9, left = 1e9, right = -1e9
           for (var i = 0; i < items.length; i++) {
             var it = items[i]
             if (!it || !it.visible || !it.parent) continue
-            var at = it.mapToItem(editOverlay, 0, 0).y
-            top = Math.min(top, at)
-            bottom = Math.max(bottom, at + it.height)
+            var at = it.mapToItem(editOverlay, 0, 0)
+            top = Math.min(top, at.y)
+            bottom = Math.max(bottom, at.y + it.height)
+            left = Math.min(left, at.x)
+            right = Math.max(right, at.x + it.width)
           }
-          return top > bottom ? null : { y: top - 6, h: bottom - top + 12 }
+          if (top > bottom) return null
+          // full width: the outline runs edge to edge; a part-width one hugs its cell
+          var full = right - left >= mainCol.width - 2
+          return full ? { x: 8, w: editOverlay.width - 16, y: top - 6, h: bottom - top + 12 }
+                      : { x: left - 5, w: right - left + 10, y: top - 6, h: bottom - top + 12 }
         }
         // a trimmed section is outlined by its box (what's left showing)
-        function boxItems(id, items) { return win.trimmedIds.indexOf(id) !== -1 && win.trimBoxes[id] ? [win.trimBoxes[id]] : items }
+        function boxItems(id, items) {
+          var c = win.laneCells[id]
+          if (c && c.parent && c.parent !== slotParking) return c.hasContent ? [c] : []
+          return win.trimmedIds.indexOf(id) !== -1 && win.trimBoxes[id] ? [win.trimBoxes[id]] : items
+        }
         readonly property var boxes: {
           var rev2 = secMedia.y + secMedia.height + secNotif.y + secNotif.height
           var rev = mainCol.height + sideFlick.contentY + secClock.y + secStatus.y + secStatus.height + secStats.y + secNet.y + secWs.y + secSearch.y + appList.y + appList.height + secTray.y + secTray.height + secBottom.y
           var rev3 = win.trimRev + win.trimmedIds.length
+          var rev4 = sideFlick.y + sideFlick.height + editOverlay.y + editOverlay.height + editOverlay.width + mainCol.width
+          var rev5 = win.laneKey.length; for (var lc in win.laneCells) { var lcell = win.laneCells[lc]; rev5 += lcell.x + lcell.width + lcell.y + lcell.height + (lcell.parent ? lcell.parent.y : 0) }
           var out = {
             clock: boxFor(boxItems("clock", [secClock])), status: boxFor(boxItems("status", [secStatus])), system: boxFor(boxItems("system", [secStats, secNet])),
             workspaces: boxFor(boxItems("workspaces", [secWs])), search: boxFor(boxItems("search", [secSearch])), media: boxFor(boxItems("media", [secMedia])),
-            notifications: boxFor(boxItems("notifications", [secNotif])), apps: boxFor([appList]), tray: boxFor(boxItems("tray", [secTray])), bottom: boxFor(boxItems("bottom", [secBottom]))
+            notifications: boxFor(boxItems("notifications", [secNotif])), apps: boxFor(boxItems("apps", [appList])), tray: boxFor(boxItems("tray", [secTray])), bottom: boxFor(boxItems("bottom", [secBottom]))
           }
-          for (var key in win.extraItems) { var xi = win.extraItems[key]; var dep = xi.y + xi.height; out[key] = boxFor([xi]) }
+          for (var key in win.extraItems) { var xi = win.extraItems[key]; var dep = xi.y + xi.height; out[key] = boxFor(boxItems(key, [xi])) }
           return out
         }
         Repeater {
@@ -3753,12 +4018,14 @@ Item {
             readonly property bool picked: root.editSection === modelData.id
             readonly property bool hiddenSec: root.setting(modelData.id, "show") === false
             readonly property bool dragged: editOverlay.dragId === modelData.id
+            // one at a time: while a section's settings are open, the others rest
+            readonly property bool locked: root.editSection !== "" && !picked
             visible: !!box
-            x: 8
+            x: dragged ? editOverlay.dragX - editOverlay.grabX : (box ? box.x : 0)
             y: dragged ? editOverlay.dragY - editOverlay.grabY : (box ? box.y : 0)
             z: dragged ? 4 : 0
-            opacity: dragged ? (editOverlay.dropHide ? 0.45 : 0.85) : 1
-            width: parent.width - 16
+            opacity: dragged ? (editOverlay.dropHide ? 0.45 : 0.85) : (locked ? 0.35 : 1)
+            width: box ? box.w : 0
             height: box ? box.h : 0
             // dashed outline (solid for the one being edited)
             Canvas {
@@ -3793,13 +4060,15 @@ Item {
             Rectangle {
               x: 8
               y: -7
-              width: elabel.implicitWidth + 8
+              width: Math.min(elabel.implicitWidth, ebox.width - 46) + 8
               height: 13
               radius: 3
               color: ebox.picked ? root.foreground : root.background
               Text {
                 id: elabel
                 anchors.centerIn: parent
+                width: Math.min(implicitWidth, ebox.width - 46)
+                elide: Text.ElideRight
                 textFormat: Text.PlainText
                 text: ebox.modelData.label + (ebox.dragged && editOverlay.dropHide ? " · RELEASE TO REMOVE"
                       : ebox.picked ? " · EDITING" : (ebox.hiddenSec ? " · HIDDEN" : ""))
@@ -3858,7 +4127,7 @@ Item {
             }
             // remove button, sitting on the outline's top-right corner
             Rectangle {
-              visible: ebox.modelData.id !== "bottom" && !ebox.dragged
+              visible: ebox.modelData.id !== "bottom" && !ebox.dragged && !ebox.locked
               z: 3
               x: parent.width - width - 8
               y: -7
@@ -3873,35 +4142,40 @@ Item {
             }
             MouseArea {
               anchors.fill: parent
+              // the picked system section: its readings are clicked and dragged instead
+              enabled: !(ebox.picked && ebox.modelData.id === "system") && !ebox.locked
               cursorShape: ebox.dragged ? Qt.ClosedHandCursor : Qt.PointingHandCursor
               acceptedButtons: Qt.LeftButton
               preventStealing: true
               property real pressY: 0
+              property real pressX: 0
               property bool moved: false
-              onPressed: function(mouse) { pressY = mouse.y; moved = false }
+              onPressed: function(mouse) { pressY = mouse.y; pressX = mouse.x; moved = false }
               onPositionChanged: function(mouse) {
                 if (!(pressedButtons & Qt.LeftButton)) return
                 var p = mapToItem(editOverlay, mouse.x, mouse.y)
-                if (!ebox.dragged && Math.abs(mouse.y - pressY) > 8) {
+                if (!ebox.dragged && Math.abs(mouse.y - pressY) + Math.abs(mouse.x - pressX) > 8) {
                   moved = true
                   editOverlay.grabY = pressY
+                  editOverlay.grabX = pressX
                   editOverlay.dragId = ebox.modelData.id
                   root.editSection = ebox.modelData.id
                 }
                 if (!ebox.dragged) return
                 editOverlay.dragY = p.y
+                editOverlay.dragX = p.x
                 editOverlay.dropHide = ebox.modelData.id !== "bottom" && p.x > editOverlay.width + 12
-                editOverlay.dropIndex = editOverlay.dropHide ? -1 : editOverlay.dropIndexAt(p.y)
+                editOverlay.dropIndex = editOverlay.dropHide ? -1 : editOverlay.dropAt(p)
               }
               onReleased: if (ebox.dragged) editOverlay.finishDrag()
-              onCanceled: { editOverlay.dragId = ""; editOverlay.dropIndex = -1; editOverlay.dropHide = false }
+              onCanceled: { editOverlay.dragId = ""; editOverlay.dropIndex = -1; editOverlay.dropHide = false; editOverlay.dropId = "" }
               onClicked: if (!moved) root.editSection = ebox.modelData.id
             }
           }
         }
       }
 
-      // -- the editor, next to the sidebar ------------------------------------------
+      // -- editor rows (used by the settings that open in the column) ------------------
       component OptRow: Item {
         id: orow
         property string label: ""
@@ -3909,11 +4183,20 @@ Item {
         property var current
         signal picked(var value)
         Layout.fillWidth: true
-        implicitHeight: 24
-        Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: orow.label; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11 }
+        // too narrow for both on one line: the options go under the label
+        readonly property bool stacked: olabel.implicitWidth + 12 + oopts.implicitWidth > width
+        implicitHeight: stacked ? olabel.implicitHeight + oopts.implicitHeight + 4 : 24
+        Text {
+          id: olabel
+          y: orow.stacked ? 0 : (parent.height - height) / 2
+          width: Math.min(implicitWidth, parent.width)
+          elide: Text.ElideRight
+          textFormat: Text.PlainText; text: orow.label; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11
+        }
         Row {
-          anchors.right: parent.right
-          anchors.verticalCenter: parent.verticalCenter
+          id: oopts
+          x: parent.width - width
+          y: orow.stacked ? olabel.implicitHeight + 4 : (parent.height - height) / 2
           spacing: 0
           Repeater {
             model: orow.options
@@ -3933,6 +4216,76 @@ Item {
           }
         }
       }
+      // a scroll bar you can grab: drag the thumb, or click the track to jump there
+      component DragBar: Item {
+        id: db
+        property var flick
+        property bool horizontal: false
+        readonly property real total: horizontal ? flick.contentWidth : flick.contentHeight
+        readonly property real view: horizontal ? flick.width : flick.height
+        readonly property real len: horizontal ? width : height
+        readonly property real thumb: Math.max(24, len * view / Math.max(1, total))
+        readonly property real pos: (horizontal ? flick.contentX : flick.contentY) / Math.max(1, total - view) * (len - thumb)
+        readonly property bool active: dbMouse.pressed || dbMouse.containsMouse
+        visible: total > view + 1
+        Rectangle {
+          x: db.horizontal ? 0 : (db.width - width) / 2
+          y: db.horizontal ? (db.height - height) / 2 : 0
+          width: db.horizontal ? db.width : (db.active ? 4 : 2)
+          height: db.horizontal ? (db.active ? 4 : 2) : db.height
+          radius: 2; color: root.faint; opacity: db.active ? 1 : 0.6
+        }
+        Rectangle {
+          x: db.horizontal ? db.pos : (db.width - width) / 2
+          y: db.horizontal ? (db.height - height) / 2 : db.pos
+          width: db.horizontal ? db.thumb : (db.active ? 4 : 2)
+          height: db.horizontal ? (db.active ? 4 : 2) : db.thumb
+          radius: 2; color: root.foreground
+          opacity: db.active ? 0.8 : (db.flick.moving ? 0.5 : 0.3)
+        }
+        MouseArea {
+          id: dbMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          preventStealing: true
+          cursorShape: Qt.PointingHandCursor
+          property real grab: 0
+          function to(p) {
+            var t = Math.max(0, Math.min(db.len - db.thumb, p - grab))
+            var c = t / Math.max(1, db.len - db.thumb) * Math.max(0, db.total - db.view)
+            if (db.horizontal) db.flick.contentX = c; else db.flick.contentY = c
+          }
+          onPressed: function(m) {
+            var p = db.horizontal ? m.x : m.y
+            grab = (p >= db.pos && p <= db.pos + db.thumb) ? p - db.pos : db.thumb / 2
+            to(p)
+          }
+          onPositionChanged: function(m) { if (pressed) to(db.horizontal ? m.x : m.y) }
+          onWheel: function(w) { w.accepted = false }
+        }
+      }
+      // a bar graph of recent readings, newest on the right
+      component Spark: Row {
+        id: sp
+        property var hist: []
+        property real peak: 1
+        property real barH: 22
+        property int n: 24
+        height: barH
+        spacing: 1
+        Repeater {
+          model: sp.n
+          Rectangle {
+            required property int index
+            readonly property real v: { var h = sp.hist, i = index - (sp.n - h.length); return i >= 0 ? Math.min(1, h[i] / Math.max(1e-9, sp.peak)) : 0 }
+            width: Math.max(1, (sp.width - (sp.n - 1)) / sp.n)
+            height: Math.max(1, v * sp.barH)
+            y: sp.barH - height
+            color: v > 0 ? root.foreground : root.faint
+            opacity: 0.35 + v * 0.65
+          }
+        }
+      }
       component StepRow: Item {
         id: srow
         property string label: ""
@@ -3944,8 +4297,9 @@ Item {
         signal changed(real value)
         Layout.fillWidth: true
         implicitHeight: 24
-        Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: srow.label; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11 }
+        Text { anchors.verticalCenter: parent.verticalCenter; width: parent.width - srowCtl.width - 8; elide: Text.ElideRight; textFormat: Text.PlainText; text: srow.label; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11 }
         Row {
+          id: srowCtl
           anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
           spacing: 8
@@ -3995,62 +4349,87 @@ Item {
         color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1
       }
 
-      PanelWindow {
-        id: editorWin
-        screen: win.screen
+      // -- edit mode, inside the sidebar ----------------------------------------------
+      // The header (Save / Cancel / Undo / + Add section / Sidebar) sits at the top of
+      // the panel; the picked section's settings open in the column right under it,
+      // and the add-section picker slides over the column.
+      Item {
+        id: editHeader
         visible: win.editHere
-        color: "transparent"
-        anchors { top: true; bottom: true; left: true }
-        margins.left: root.sidebarWidth
-        implicitWidth: 380
-        exclusionMode: ExclusionMode.Ignore
-        WlrLayershell.layer: win.lifted ? WlrLayer.Overlay : WlrLayer.Top
-        WlrLayershell.namespace: "jake-sidebar-editor"
-        WlrLayershell.keyboardFocus: win.editHere && (root.addOpen || root.profileNaming) ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
-
-        Rectangle {
-          anchors.fill: parent
-          color: Qt.rgba(root.background.r, root.background.g, root.background.b, 1)
-          Rectangle { anchors.fill: parent; color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.03) }
-          Rectangle { width: 1; height: parent.height; color: root.faint }
-
-          ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: 20
-            anchors.leftMargin: 22
-            spacing: 8
-
-            RowLayout {
-              Layout.fillWidth: true
-              Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: "Edit sidebar"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 14; font.bold: true }
-              Rectangle {
-                implicitWidth: cancelText.implicitWidth + 18; implicitHeight: 24; radius: 4
-                color: cancelMouse.containsMouse ? root.faint : "transparent"
-                border.width: 1; border.color: root.dim
-                Text { id: cancelText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "Cancel"; color: cancelMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
-                MouseArea { id: cancelMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.cancelEditing() }
-              }
-              Rectangle {
-                Layout.leftMargin: 4
-                implicitWidth: saveText.implicitWidth + 18; implicitHeight: 24; radius: 4
-                color: saveMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.8) : root.foreground
-                Text { id: saveText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "Save"; color: root.background; font.family: root.fontFamily; font.pixelSize: 11; font.bold: true }
-                MouseArea { id: saveMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.saveEditing() }
-              }
+        z: 70
+        x: sideFlick.x
+        y: 16 + win.panelInnerX
+        width: sideFlick.width
+        height: visible ? ehCol.implicitHeight : 0
+        ColumnLayout {
+          id: ehCol
+          width: parent.width
+          spacing: 8
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: 6
+            Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: "Edit sidebar"; elide: Text.ElideRight; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 12; font.bold: true }
+            Rectangle {
+              implicitWidth: cancelText.implicitWidth + 16; implicitHeight: 24; radius: 4
+              color: cancelMouse.containsMouse ? root.faint : "transparent"
+              border.width: 1; border.color: root.dim
+              Text { id: cancelText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "Cancel"; color: cancelMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+              MouseArea { id: cancelMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.cancelEditing() }
             }
+            Rectangle {
+              implicitWidth: saveText.implicitWidth + 16; implicitHeight: 24; radius: 4
+              color: saveMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.8) : root.foreground
+              Text { id: saveText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "Save"; color: root.background; font.family: root.fontFamily; font.pixelSize: 10; font.bold: true }
+              MouseArea { id: saveMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.saveEditing() }
+            }
+          }
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: 12
             Text {
-              Layout.topMargin: 6
-              Layout.bottomMargin: 4
-              visible: !root.addOpen
-              textFormat: Text.PlainText
-              text: "+ Add section"
-              color: addLinkMouse.containsMouse ? root.foreground : root.dim
-              font.family: root.fontFamily; font.pixelSize: 11
-              MouseArea { id: addLinkMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.addOpen = true }
+              textFormat: Text.PlainText; text: "+ Add section"
+              color: root.addOpen || ehAddMouse.containsMouse ? root.foreground : root.dim
+              font.family: root.fontFamily; font.pixelSize: 11; font.bold: root.addOpen
+              MouseArea { id: ehAddMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.addOpen = !root.addOpen }
             }
+            Item { Layout.fillWidth: true }
+            Text {
+              visible: root.editHistory.length > 0
+              textFormat: Text.PlainText; text: "Undo"
+              color: ehUndoMouse.containsMouse ? root.foreground : root.dim
+              font.family: root.fontFamily; font.pixelSize: 11
+              MouseArea { id: ehUndoMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.undoEdit() }
+            }
+            // the whole sidebar's settings (width, background, auto-hide, look, profiles)
+            Text {
+              readonly property bool open: root.editSection === "_sidebar"
+              textFormat: Text.PlainText; text: "Sidebar " + (open ? "˅" : "›")
+              color: open || ehSideMouse.containsMouse ? root.foreground : root.dim
+              font.family: root.fontFamily; font.pixelSize: 11; font.bold: open
+              MouseArea { id: ehSideMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: { root.addOpen = false; root.editSection = parent.open ? "" : "_sidebar" } }
+            }
+          }
+          Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.faint }
+        }
+      }
 
-            // the "Add section" picker (takes the place of the section's settings)
+      // the "Add section" picker, over the column
+      Rectangle {
+        id: addSheet
+        visible: win.editHere && root.addOpen
+        z: 68
+        // covers the outlines too (they sit a little outside the column)
+        x: 4
+        width: parent.width - 8 - win.panelBorderW
+        y: editOverlay.y
+        height: sideFlick.y + sideFlick.height - y
+        ColumnLayout { anchors.fill: parent; anchors.leftMargin: sideFlick.x - 4; anchors.rightMargin: parent.width - sideFlick.x - sideFlick.width + 4; anchors.topMargin: 4
+          Item { Layout.fillWidth: true; Layout.fillHeight: true; id: addSlot } }
+        color: Qt.rgba(root.background.r, root.background.g, root.background.b, 1)
             ColumnLayout {
+              parent: addSlot
+              anchors.fill: parent
               visible: root.addOpen
               Layout.fillWidth: true
               Layout.fillHeight: true
@@ -4164,16 +4543,90 @@ Item {
                 text: "↑↓ to move · Enter to add · Esc to close. A widget section keeps its panel open in the sidebar."
                 color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
             }
-            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.faint }
+      }
 
+      // The settings of the section being edited float over the column, so the
+      // section stays where it is: under it if there's room, else above it, else
+      // along the bottom. At most 420 px tall; longer settings scroll inside.
+      // (The whole sidebar's settings open at the top, under the header.)
+      Rectangle {
+        id: editForm
+        readonly property real maxH: 420
+        readonly property real areaTop: editOverlay.y + 4
+        readonly property real areaBot: sideFlick.y + sideFlick.height
+        readonly property var box: editOverlay.boxes[root.editSection] || null
+        readonly property real boxTop: box ? editOverlay.y + box.y : areaTop
+        readonly property real boxBot: box ? editOverlay.y + box.y + box.h : areaTop
+        readonly property real want: Math.min(efCol.implicitHeight + 18 + efHead.height + 15, maxH)
+        readonly property real below: areaBot - (boxBot + 8)
+        readonly property real above: boxTop - 12 - areaTop     // the outline's label sits on its top edge
+        readonly property string place: root.editSection === "_sidebar" || !box ? "top"
+          : below >= want ? "below" : above >= want ? "above"
+          : Math.max(below, above) >= 140 ? (below >= above ? "below" : "above") : "bottom"
+        visible: win.editHere && root.editSection !== "" && editOverlay.dragId === ""
+        z: 66
+        x: sideFlick.x - 4
+        width: sideFlick.width + 8
+        height: place === "below" ? Math.min(want, below) : place === "above" ? Math.min(want, above)
+              : place === "top" ? Math.min(want, areaBot - areaTop) : Math.min(want, (areaBot - areaTop) * 0.6)
+        y: place === "below" ? boxBot + 8 : place === "above" ? boxTop - 12 - height
+         : place === "top" ? areaTop : areaBot - height
+        onVisibleChanged: efFlick.contentY = 0
+        Connections { target: root; function onEditSectionChanged() { efFlick.contentY = 0 } }
+        radius: 8
+        color: Qt.rgba(root.background.r, root.background.g, root.background.b, 1)
+        border.width: 1
+        border.color: root.faint
+        Rectangle { anchors.fill: parent; radius: 8; color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05) }
+        // clicks and scrolling here stay here (not on the outlines or the column underneath)
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: function(w) { w.accepted = true } }
+        // the section's name, and its own Cancel / Save (both close it)
+        RowLayout {
+          id: efHead
+          x: 10; y: 8
+          width: parent.width - 20
+          height: 24
+          spacing: 6
+          Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: root.editSectionLabel; elide: Text.ElideRight
+            color: root.foreground; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1; font.bold: true }
+          Rectangle {
+            implicitWidth: efCancelText.implicitWidth + 14; implicitHeight: 22; radius: 4
+            color: efCancelMouse.containsMouse ? root.faint : "transparent"
+            border.width: 1; border.color: root.dim
+            Text { id: efCancelText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "Cancel"; color: efCancelMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+            MouseArea { id: efCancelMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.closeForm(false) }
+          }
+          Rectangle {
+            implicitWidth: efSaveText.implicitWidth + 14; implicitHeight: 22; radius: 4
+            color: efSaveMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.8) : root.foreground
+            Text { id: efSaveText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "Save"; color: root.background; font.family: root.fontFamily; font.pixelSize: 10; font.bold: true }
+            MouseArea { id: efSaveMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.closeForm(true) }
+          }
+        }
+        Rectangle { x: 1; y: efHead.y + efHead.height + 6; width: parent.width - 2; height: 1; color: root.faint }
+        Flickable {
+          id: efFlick
+          anchors.fill: parent
+          anchors.margins: 1
+          anchors.topMargin: efHead.y + efHead.height + 7
+          contentWidth: width
+          contentHeight: efCol.implicitHeight + 18
+          interactive: contentHeight > height + 1
+          boundsBehavior: Flickable.StopAtBounds
+          clip: true
+        ColumnLayout {
+          id: efCol
+          x: 9; y: 9
+          width: efFlick.width - 18
+          spacing: 6
+          readonly property bool secMode: root.editSection !== "" && root.editSection !== "_sidebar"
             readonly property var onOff: [[true, "on"], [false, "off"]]
 
             // CLOCK
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "clock"
+              visible: efCol.secMode && root.editSection === "clock"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "CLOCK" }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("clock", "show"); onPicked: function(v) { root.setSetting("clock", "show", v) } }
               OptRow { label: "Format"; options: [[true, "24h"], [false, "12h"]]; current: root.setting("clock", "h24"); onPicked: function(v) { root.setSetting("clock", "h24", v) } }
               OptRow { label: "Date"; options: parent.parent.onOff; current: root.setting("clock", "date"); onPicked: function(v) { root.setSetting("clock", "date", v) } }
@@ -4182,10 +4635,9 @@ Item {
             }
             // STATUS (the row under the clock by default)
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "status"
+              visible: efCol.secMode && root.editSection === "status"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "STATUS" }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("status", "show"); onPicked: function(v) { root.setSetting("status", "show", v) } }
               OptRow { label: "Indicators"; options: parent.parent.onOff; current: root.setting("status", "indicators"); onPicked: function(v) { root.setSetting("status", "indicators", v) } }
               // which indicators (click to turn one on or off)
@@ -4215,27 +4667,99 @@ Item {
             }
             // SYSTEM
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "system"
+              visible: efCol.secMode && root.editSection === "system"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "SYSTEM" }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("system", "show"); onPicked: function(v) { root.setSetting("system", "show", v) } }
-              OptRow { label: "CPU"; options: parent.parent.onOff; current: root.setting("system", "cpu"); onPicked: function(v) { root.setSetting("system", "cpu", v) } }
-              OptRow { label: "Memory"; options: parent.parent.onOff; current: root.setting("system", "mem"); onPicked: function(v) { root.setSetting("system", "mem", v) } }
-              OptRow { label: "Disk"; options: parent.parent.onOff; current: root.setting("system", "disk"); onPicked: function(v) { root.setSetting("system", "disk", v) } }
-              OptRow { visible: root.gpuFound; label: "GPU usage"; options: parent.parent.onOff; current: root.setting("system", "gpu"); onPicked: function(v) { root.setSetting("system", "gpu", v) } }
-              OptRow { visible: root.gpuFound; label: "GPU memory (VRAM)"; options: parent.parent.onOff; current: root.setting("system", "vram"); onPicked: function(v) { root.setSetting("system", "vram", v) } }
-              OptRow { visible: root.gpuFound; label: "GPU temperature"; options: parent.parent.onOff; current: root.setting("system", "gpuTemp"); onPicked: function(v) { root.setSetting("system", "gpuTemp", v) } }
-              OptRow { label: "Network speed"; options: parent.parent.onOff; current: root.setting("system", "network"); onPicked: function(v) { root.setSetting("system", "network", v) } }
-              OptRow { visible: root.setting("system", "network") !== false; label: "Network graph"; options: parent.parent.onOff; current: root.setting("system", "netGraph"); onPicked: function(v) { root.setSetting("system", "netGraph", v) } }
+              EdHeading { text: "DATA POINTS" }
+              // one chip per reading, in layout order, scrolling sideways;
+              // pick one (here or in the section) to set it up
+              Item {
+                Layout.fillWidth: true
+                Layout.preferredHeight: dpStrip.height + (dpStrip.contentWidth > dpStrip.width ? 12 : 0)
+                Flickable {
+                  id: dpStrip
+                  width: parent.width; height: 40
+                  contentWidth: dpRow.implicitWidth; contentHeight: height
+                  flickableDirection: Flickable.HorizontalFlick
+                  boundsBehavior: Flickable.StopAtBounds
+                  clip: true
+                  function reveal(item) {
+                    var x = item.x
+                    if (x < contentX) contentX = x
+                    else if (x + item.width > contentX + width) contentX = Math.min(contentWidth - width, x + item.width - width)
+                  }
+                  Row {
+                    id: dpRow
+                    spacing: 6
+                    Repeater {
+                      model: root.statIds.length
+                      Rectangle {
+                        id: chip
+                        required property int index
+                        readonly property var avail: root.systemItems.filter(function(it) { return it.avail })
+                        readonly property var modelData: avail[index] || ({ id: "", show: false, w: 5, h: 1, style: "value" })
+                        visible: index < avail.length
+                        readonly property bool sel: root.systemPick === modelData.id
+                        width: chipCol.implicitWidth + 18; height: 40
+                        radius: 5
+                        color: sel ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10) : "transparent"
+                        border.width: 1
+                        border.color: sel ? root.foreground : (chipMouse.containsMouse ? root.dim : root.faint)
+                        opacity: modelData.show ? 1 : 0.5
+                        onSelChanged: if (sel) dpStrip.reveal(chip)
+                        Column {
+                          id: chipCol
+                          anchors.centerIn: parent
+                          spacing: 2
+                          Text { textFormat: Text.PlainText; text: root.statShort[chip.modelData.id] || ""; color: chip.sel ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 11; font.bold: true; font.letterSpacing: 1 }
+                          Text { textFormat: Text.PlainText
+                            text: chip.modelData.show ? (chip.modelData.w === 1 ? "full" : "1/" + chip.modelData.w) + " × " + chip.modelData.h + " · " + (chip.modelData.style === "value" ? "number" : chip.modelData.style) : "off"
+                            color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
+                        }
+                        MouseArea { id: chipMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.systemPick = chip.modelData.id }
+                      }
+                    }
+                  }
+                  // the mouse wheel scrolls the strip sideways
+                  MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.NoButton
+                    onWheel: function(w) {
+                      if (dpStrip.contentWidth <= dpStrip.width) { w.accepted = false; return }
+                      var d = w.angleDelta.x !== 0 ? -w.angleDelta.x : -w.angleDelta.y
+                      dpStrip.contentX = Math.max(0, Math.min(dpStrip.contentWidth - dpStrip.width, dpStrip.contentX + d / 2))
+                    }
+                  }
+                }
+                DragBar { flick: dpStrip; horizontal: true; anchors.top: dpStrip.bottom; width: dpStrip.width; height: 12 }
+              }
+              EdHeading { text: root.statLong[root.systemPick].toUpperCase() }
+              OptRow { label: "Show"; options: parent.parent.onOff
+                current: (root.systemItems.filter(function(it) { return it.id === root.systemPick })[0] || {}).show
+                onPicked: function(v) { root.setSystemItem(root.systemPick, "show", v) } }
+              OptRow { label: "Width"; options: [[5, "1/5"], [3, "1/3"], [2, "1/2"], [1, "full"]]
+                current: (root.systemItems.filter(function(it) { return it.id === root.systemPick })[0] || {}).w
+                onPicked: function(v) { root.setSystemItem(root.systemPick, "w", v) } }
+              OptRow { label: "Height"; options: [[1, "1 row"], [2, "2"], [3, "3"]]
+                current: (root.systemItems.filter(function(it) { return it.id === root.systemPick })[0] || {}).h
+                onPicked: function(v) { root.setSystemItem(root.systemPick, "h", v) } }
+              OptRow { label: "Style"; options: [["value", "number"], ["bar", "bar"], ["graph", "graph"]]
+                current: (root.systemItems.filter(function(it) { return it.id === root.systemPick })[0] || {}).style
+                onPicked: function(v) { root.setSystemItem(root.systemPick, "style", v) } }
+              OptRow { label: "Move"; options: [["-1", "‹ earlier"], ["1", "later ›"]]; current: ""
+                onPicked: function(v) { root.nudgeSystemItem(root.systemPick, Number(v)) } }
+              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
+                text: "Or drag a reading in the section to either side of another one; the lit bar shows where it lands."
+                color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+              EdHeading { text: "SECTION" }
               StepRow { label: "Refresh every"; value: root.setting("system", "refresh"); min: 1; max: 10; suffix: " s"; onChanged: function(v) { root.setSetting("system", "refresh", v) } }
             }
             // WORKSPACES
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "workspaces"
+              visible: efCol.secMode && root.editSection === "workspaces"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "WORKSPACES" }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("workspaces", "show"); onPicked: function(v) { root.setSetting("workspaces", "show", v) } }
               StepRow { label: "Always show"; value: root.setting("workspaces", "count"); min: 1; max: 10; onChanged: function(v) { root.setSetting("workspaces", "count", v) } }
               OptRow { label: "Style"; options: [["numbers", "numbers"], ["dots", "dots"]]; current: root.setting("workspaces", "style"); onPicked: function(v) { root.setSetting("workspaces", "style", v) } }
@@ -4244,20 +4768,18 @@ Item {
             }
             // SEARCH
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "search"
+              visible: efCol.secMode && root.editSection === "search"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "SEARCH" }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("search", "show"); onPicked: function(v) { root.setSetting("search", "show", v) } }
               OptRow { label: "CLIP button"; options: parent.parent.onOff; current: root.setting("search", "clip"); onPicked: function(v) { root.setSetting("search", "clip", v) } }
               Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Super+Space opens the search either way."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
             }
             // APP LIST
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "apps"
+              visible: efCol.secMode && root.editSection === "apps"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "APP LIST" }
               OptRow { label: "Running apps below pins"; options: parent.parent.onOff; current: root.setting("apps", "running"); onPicked: function(v) { root.setSetting("apps", "running", v) } }
               OptRow { label: "Group windows per app"; options: parent.parent.onOff; current: root.setting("apps", "group"); onPicked: function(v) { root.setSetting("apps", "group", v) } }
               OptRow { label: "Row height"; options: [[true, "compact"], [false, "comfortable"]]; current: root.setting("apps", "compact"); onPicked: function(v) { root.setSetting("apps", "compact", v) } }
@@ -4271,10 +4793,9 @@ Item {
             }
             // a widget section
             ColumnLayout {
-              visible: !root.addOpen && root.editSection.indexOf("w:") === 0
+              visible: efCol.secMode && root.editSection.indexOf("w:") === 0
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: root.widgetName(root.widgetOf(root.editSection)).toUpperCase() + " · WIDGET" }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting(root.editSection, "show") !== false; onPicked: function(v) { root.setSetting(root.editSection, "show", v) } }
               OptRow { label: "Title"; options: parent.parent.onOff; current: root.setting(root.editSection, "title") === true; onPicked: function(v) { root.setSetting(root.editSection, "title", v) } }
               OptRow { label: "Fit"; options: [["squeeze", "squeeze"], ["shrink", "shrink"]]; current: root.setting(root.editSection, "fit") === "shrink" ? "shrink" : "squeeze"; onPicked: function(v) { root.setSetting(root.editSection, "fit", v) } }
@@ -4378,41 +4899,48 @@ Item {
             }
             // MEDIA
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "media"
+              visible: efCol.secMode && root.editSection === "media"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "MEDIA" }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("media", "show"); onPicked: function(v) { root.setSetting("media", "show", v) } }
               OptRow { label: "When nothing plays"; options: [[true, "keep"], [false, "hide"]]; current: root.setting("media", "idle"); onPicked: function(v) { root.setSetting("media", "idle", v) } }
             }
             // NOTIFICATIONS
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "notifications"
+              visible: efCol.secMode && root.editSection === "notifications"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "NOTIFICATIONS" }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("notifications", "show"); onPicked: function(v) { root.setSetting("notifications", "show", v) } }
               StepRow { label: "How many"; value: root.setting("notifications", "count"); min: 1; max: 10; onChanged: function(v) { root.setSetting("notifications", "count", v) } }
               Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "The latest from Omarchy's notification history. \"silence\" turns on Do not disturb."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
             }
             // TRAY
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "tray"
+              visible: efCol.secMode && root.editSection === "tray"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "TRAY" }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("tray", "show"); onPicked: function(v) { root.setSetting("tray", "show", v) } }
               OptRow { label: "Align"; options: [["left", "left"], ["right", "right"]]; current: root.setting("tray", "align"); onPicked: function(v) { root.setSetting("tray", "align", v) } }
-              Text { Layout.fillWidth: true; Layout.topMargin: 4; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Hide single tray icons in quick settings (the sidebar's icon in the Plugins row), under Sidebar. A tray icon's menu opens just above the tray."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+              EdHeading { visible: SystemTray.items.values.length > 0; text: "TRAY ICONS" }
+              Repeater {
+                model: SystemTray.items
+                OptRow {
+                  required property var modelData
+                  label: root.trayLabel(modelData)
+                  options: [[true, "on"], [false, "off"]]
+                  current: !root.isHidden("tray:" + modelData.id)
+                  onPicked: function(v) { root.setHidden("tray:" + modelData.id, !v) }
+                }
+              }
+              Text { Layout.fillWidth: true; Layout.topMargin: 4; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "A tray icon's menu opens just above the tray."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
             }
             // PLUGINS (the bottom row)
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "bottom"
+              visible: efCol.secMode && root.editSection === "bottom"
               Layout.fillWidth: true
               spacing: 6
               id: bottomForm
               readonly property bool wsMode: root.setting("bottom", "right") === "workspaces"
-              EdHeading { text: "BOTTOM ROW" }
               OptRow { label: "Right side"; options: [["plugins", "plugins"], ["workspaces", "workspaces"]]; current: root.setting("bottom", "right"); onPicked: function(v) { root.setSetting("bottom", "right", v) } }
               // -- workspaces on the right: the same settings as the workspaces section
               EdHeading { visible: bottomForm.wsMode; text: "WORKSPACES" }
@@ -4445,13 +4973,64 @@ Item {
               Text { visible: !bottomForm.wsMode; Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "The first icon is the sidebar's own: click it for quick settings. To show a plugin's panel in the sidebar instead, add it as a section (+ add section)."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
             }
 
-            // built-in sections: height (widget sections have it in their own panel above)
-            HeightRows { visible: !root.addOpen && win.isTrimmable(root.editSection) && win.isSizable(root.editSection); sid: root.editSection; fullH: win.sectionFullH(root.editSection) }
-            // built-in sections: trim (widget sections have it in their own panel above)
-            StepRow { visible: !root.addOpen && win.isTrimmable(root.editSection); label: "Trim top"; value: root.cropOf(root.editSection, "top"); step: 2; min: 0; max: 400; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, v, root.cropOf(root.editSection, "bottom")) } }
-            StepRow { visible: !root.addOpen && win.isTrimmable(root.editSection); label: "Trim bottom"; value: root.cropOf(root.editSection, "bottom"); step: 2; min: 0; max: 400; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, root.cropOf(root.editSection, "top"), v) } }
+            // every section but the app list and the bottom row: its width on the grid
+            EdHeading { visible: efCol.secMode; text: "LAYOUT" }
+            OptRow {
+              visible: efCol.secMode
+              label: "Width"
+              options: [[3, "1/4"], [4, "1/3"], [6, "1/2"], [8, "2/3"], [9, "3/4"], [12, "full"]]
+              current: [3, 4, 6, 8, 9, 12].indexOf(root.setting(root.editSection, "span")) !== -1 ? root.setting(root.editSection, "span") : 12
+              onPicked: function(v) { root.setSetting(root.editSection, "span", v) }
+            }
             Text {
-              visible: !root.addOpen && win.isTrimmable(root.editSection) && (root.cropOf(root.editSection, "top") > 0 || root.cropOf(root.editSection, "bottom") > 0)
+              visible: efCol.secMode
+              Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
+              text: root.setting(root.editSection, "pinned") === true ? "Pinned sections take the full width, without card or padding, once editing ends."
+                    : "Sections that fit side by side share a row; drag one to either side of another to pair them."
+              color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
+            }
+            OptRow {
+              visible: efCol.secMode
+              label: "Align in row"
+              options: [["top", "top"], ["middle", "middle"], ["bottom", "bottom"]]
+              current: root.setting(root.editSection, "align") || "top"
+              onPicked: function(v) { root.setSetting(root.editSection, "align", v) }
+            }
+            OptRow {
+              visible: efCol.secMode
+              label: "Background"
+              options: [[false, "none"], [true, "card"]]
+              current: root.setting(root.editSection, "card") === true
+              onPicked: function(v) { root.setSetting(root.editSection, "card", v) }
+            }
+            StepRow {
+              visible: efCol.secMode
+              label: "Padding"
+              value: { var v = root.setting(root.editSection, "pad"); return typeof v === "number" ? v : (root.setting(root.editSection, "card") === true ? 10 : 0) }
+              step: 2; min: 0; max: 32; suffix: " px"
+              onChanged: function(v) { root.setSetting(root.editSection, "pad", v) }
+            }
+            // the app list: height (it isn't trimmed, so it has its own rows)
+            HeightRows { visible: efCol.secMode && root.editSection === "apps"; sid: "apps"; fullH: appList.contentHeight }
+            Text {
+              visible: efCol.secMode && root.editSection === "apps"
+              Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
+              text: "Fit content also stretches the list down to the bottom row."
+              color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
+            }
+            Text {
+              visible: efCol.secMode && root.editSection === "bottom"
+              Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
+              text: "The bottom row is one row of icons, so it has no height setting."
+              color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
+            }
+            // built-in sections: height (widget sections have it in their own panel above)
+            HeightRows { visible: efCol.secMode && win.isTrimmable(root.editSection) && win.isSizable(root.editSection); sid: root.editSection; fullH: win.sectionFullH(root.editSection) }
+            // built-in sections: trim (widget sections have it in their own panel above)
+            StepRow { visible: efCol.secMode && win.isTrimmable(root.editSection); label: "Trim top"; value: root.cropOf(root.editSection, "top"); step: 2; min: 0; max: 400; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, v, root.cropOf(root.editSection, "bottom")) } }
+            StepRow { visible: efCol.secMode && win.isTrimmable(root.editSection); label: "Trim bottom"; value: root.cropOf(root.editSection, "bottom"); step: 2; min: 0; max: 400; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, root.cropOf(root.editSection, "top"), v) } }
+            Text {
+              visible: efCol.secMode && win.isTrimmable(root.editSection) && (root.cropOf(root.editSection, "top") > 0 || root.cropOf(root.editSection, "bottom") > 0)
               textFormat: Text.PlainText; text: "Reset trim"
               color: resetTrim2Mouse.containsMouse ? root.foreground : root.dim
               font.family: root.fontFamily; font.pixelSize: 10
@@ -4459,30 +5038,38 @@ Item {
             }
             // every section but the app list can be pinned
             OptRow {
-              visible: !root.addOpen && root.editSection !== "apps"
+              visible: efCol.secMode && root.editSection !== "apps"
               label: "Pin in position"
               options: [[true, "on"], [false, "off"]]
               current: root.setting(root.editSection, "pinned") === true
               onPicked: function(v) { root.setSetting(root.editSection, "pinned", v) }
             }
             Text {
-              visible: !root.addOpen && root.editSection !== "apps" && root.setting(root.editSection, "pinned") === true
+              visible: efCol.secMode && root.editSection !== "apps" && root.setting(root.editSection, "pinned") === true
               Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
               text: "Stays in view when the sidebar scrolls; the rest scrolls behind it. (Pins rest while editing.)"
               color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
             }
             Text {
-              visible: !root.addOpen && root.editSection !== "bottom" && root.editSection.indexOf("w:") !== 0
+              visible: efCol.secMode && root.editSection !== "bottom" && root.editSection.indexOf("w:") !== 0
               Layout.topMargin: 4
               textFormat: Text.PlainText; text: "Remove this section"
               color: bRemMouse.containsMouse ? root.urgent : root.dim
               font.family: root.fontFamily; font.pixelSize: 11
               MouseArea { id: bRemMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.removeSection(root.editSection) }
             }
-            Item { visible: !root.addOpen; Layout.fillHeight: true }
+            Text {
+              visible: efCol.secMode
+              textFormat: Text.PlainText; text: "Reset this section"; color: resetMouse.containsMouse ? root.foreground : root.dim
+              font.family: root.fontFamily; font.pixelSize: 10
+              MouseArea { id: resetMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.resetSection(root.editSection) }
+            }
 
-            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.faint }
-            EdHeading { text: "WHOLE SIDEBAR" }
+            // THE WHOLE SIDEBAR
+            ColumnLayout {
+              visible: root.editSection === "_sidebar"
+              Layout.fillWidth: true
+              spacing: 6
             StepRow { label: "Width"; value: root.sidebarWidth; step: 20; min: 220; max: 400; suffix: " px"; onChanged: function(v) { root.setSetting("", "width", v) } }
             OptRow { label: "Background"; options: [["solid", "solid"], ["glass", "see-through"]]; current: root.setting("general", "background"); onPicked: function(v) { root.setSetting("general", "background", v) } }
             OptRow { label: "Auto-hide"; options: [[true, "on"], [false, "off"]]; current: root.setting("general", "autohide"); onPicked: function(v) { root.setSetting("general", "autohide", v) } }
@@ -4541,20 +5128,8 @@ Item {
             }
             RowLayout {
               Layout.fillWidth: true
+              Layout.topMargin: 4
               Text {
-                textFormat: Text.PlainText; text: "Reset this section"; color: resetMouse.containsMouse ? root.foreground : root.dim
-                font.family: root.fontFamily; font.pixelSize: 10
-                MouseArea { id: resetMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.resetSection(root.editSection) }
-              }
-              Text {
-                Layout.leftMargin: 12
-                visible: root.editHistory.length > 0
-                textFormat: Text.PlainText; text: "Undo"; color: undoMouse.containsMouse ? root.foreground : root.dim
-                font.family: root.fontFamily; font.pixelSize: 10
-                MouseArea { id: undoMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.undoEdit() }
-              }
-              Text {
-                Layout.leftMargin: 12
                 textFormat: Text.PlainText; text: "Reset all"; color: resetAllMouse.containsMouse ? root.urgent : root.dim
                 font.family: root.fontFamily; font.pixelSize: 10
                 MouseArea { id: resetAllMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.resetAll() }
@@ -4567,9 +5142,13 @@ Item {
                 MouseArea { id: resetOrderMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setSetting("", "order", root.defaultOrder) }
               }
             }
-          }
+            }
         }
+        }
+        // scroll bar while the settings don't all fit: drag it, or click along it
+        DragBar { flick: efFlick; x: parent.width - 11; y: efFlick.y + 4; width: 10; height: efFlick.height - 8 }
       }
+
 
       // The sections scroll (mouse wheel) when they don't all fit. Mouse drags
       // don't move it, so dragging apps and sections keeps working.
@@ -4577,7 +5156,7 @@ Item {
         id: sideFlick
         anchors.fill: parent
         anchors.leftMargin: 16 + win.panelInnerX
-        anchors.topMargin: 16 + win.panelInnerX
+        anchors.topMargin: 16 + win.panelInnerX + (win.editHere ? editHeader.height + 16 : 0)
         anchors.rightMargin: 16 + win.panelBorderW
         anchors.bottomMargin: 10 + win.panelInnerX
         contentWidth: width
@@ -4782,82 +5361,176 @@ Item {
           }
         }
 
-        // -- cpu / mem / disk / gpu (wraps to a second line when it doesn't fit) --
-        Flow {
+        // -- system: the readings on a grid. Each one is a fifth, a third, half or all
+        // of the width and 1-3 rows tall, shown as a number, a bar or a graph; they
+        // fill the grid in order, left to right, each going in the first gap it fits.
+        // In edit mode, click one to pick it and drag it to either side of another. --
+        Item {
           id: secStats
-          visible: root.sectionShown("system") && (root.setting("system", "cpu") || root.setting("system", "mem") || root.setting("system", "disk")
-                   || (root.gpuFound && (root.setting("system", "gpu") || root.setting("system", "vram") || root.setting("system", "gpuTemp"))))
+          readonly property var shown: root.systemItems.filter(function(it) { return it.show && it.avail })
+          readonly property int cols: 30          // fits fifths, thirds and halves
+          readonly property real gap: 8
+          readonly property real rowH: 34
+          readonly property real unit: (width + gap) / cols
+          readonly property var placed: {
+            var occ = [], cells = [], r = 0, c = 0, rows = 0, n = cols
+            function free(r0, c0, sp, h) {
+              for (var y = r0; y < r0 + h; y++) for (var x = c0; x < c0 + sp; x++) if (occ[y] && occ[y][x]) return false
+              return true
+            }
+            shown.forEach(function(it) {
+              var sp = n / it.w, h = it.h
+              while (true) {
+                if (c + sp > n) { r++; c = 0; continue }
+                if (free(r, c, sp, h)) break
+                c++
+              }
+              for (var y = r; y < r + h; y++) { occ[y] = occ[y] || []; for (var x = c; x < c + sp; x++) occ[y][x] = true }
+              cells.push({ it: it, c: c, r: r, sp: sp, h: h })
+              rows = Math.max(rows, r + h)
+              c += sp
+            })
+            return { cells: cells, rows: rows }
+          }
+          readonly property bool arranging: win.editHere && root.editSection === "system"
+          property string dragId: ""
+          property string dropId: ""
+          property bool dropAfter: false   // land after the target rather than before it
+          property var tiles: []
+          // the tile nearest the pointer, leaving out the one being dragged
+          function tileAt(p) {
+            var best = null, bestD = 1e9
+            for (var i = 0; i < tiles.length; i++) {
+              var t = tiles[i]
+              if (!t.visible || t.sid === dragId) continue
+              var dx = Math.max(t.x - p.x, 0, p.x - (t.x + t.width))
+              var dy = Math.max(t.y - p.y, 0, p.y - (t.y + t.height))
+              var d = dx + dy * 3
+              if (d < bestD) { bestD = d; best = t }
+            }
+            return bestD < 60 ? best : null
+          }
+          // before or after: by x, or by y for one as wide as the section
+          function sideOf(t, p) { return t.sp >= cols ? p.y > t.y + t.height / 2 : p.x > t.x + t.width / 2 }
+          visible: root.sectionShown("system") && shown.length > 0
           opacity: root.sectionOpacity("system")
           Layout.fillWidth: true
-          spacing: 14
+          implicitHeight: placed.rows > 0 ? placed.rows * (rowH + gap) - gap : 0
+          Behavior on implicitHeight { enabled: secStats.arranging; NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+          // edit mode: the grid's rows and thirds/halves, faintly
           Repeater {
-            id: statsRep
-            model: [["CPU", root.cpu, "cpu"], ["MEM", root.mem, "mem"], ["DSK", root.disk, "disk"],
-                    ["GPU", root.gpu, "gpu"], ["VRM", root.vramTotal > 0 ? 100 * root.vramUsed / root.vramTotal : 0, "vram"], ["TMP", root.gpuTemp, "gpuTemp", "°"]]
-                   .filter(function(m) { return root.setting("system", m[2]) && (["gpu", "vram", "gpuTemp"].indexOf(m[2]) === -1 || root.gpuFound) })
-            Row {
-              required property var modelData
-              spacing: 5
-              Text { anchors.baseline: statVal.baseline; textFormat: Text.PlainText; text: modelData[0]; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
-              Text {
-                id: statVal
-                textFormat: Text.PlainText
-                text: Math.round(modelData[1]) + (modelData[3] || "%")
-                color: modelData[1] >= 85 ? root.urgent : root.foreground
-                font.family: root.fontFamily; font.pixelSize: 13; font.bold: true
-              }
+            model: secStats.arranging ? secStats.placed.rows : 0
+            Rectangle {
+              required property int index
+              y: index * (secStats.rowH + secStats.gap); width: secStats.width; height: secStats.rowH
+              radius: 3; color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.03)
             }
           }
-        }
-
-        // -- network --------------------------------------------------------
-        RowLayout {
-          id: secNet
-          visible: root.sectionShown("system") && root.setting("system", "network")
-          opacity: root.sectionOpacity("system")
-          Layout.fillWidth: true
-          spacing: 10
+          // a fixed count, so tiles stay put (and can glide) when settings change
           Repeater {
-            model: [["DOWN", root.rxRate, root.rxHistory], ["UP", root.txRate, root.txHistory]]
-            ColumnLayout {
-              required property var modelData
-              Layout.fillWidth: true
-              Layout.preferredWidth: 1
-              spacing: 2
-              Text { textFormat: Text.PlainText; text: modelData[0]; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
-              RowLayout {
-                spacing: 3
-                Text { textFormat: Text.PlainText; text: root.rateParts(modelData[1])[0]; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 22; font.bold: true }
-                Text { Layout.alignment: Qt.AlignBottom; Layout.bottomMargin: 3; textFormat: Text.PlainText; text: root.rateParts(modelData[1])[1]; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
-              }
-              // sparkline
+            model: root.statIds.length
+            Item {
+              id: tile
+              required property int index
+              readonly property var cell: secStats.placed.cells[index] || null
+              readonly property string sid: cell ? cell.it.id : ""
+              readonly property int sp: cell ? cell.sp : 0
+              readonly property int rows: cell ? cell.h : 1
+              readonly property string look: cell ? cell.it.style : "value"
+              readonly property bool compact: rows === 1
+              readonly property var hist: root.statHist[sid] || []
+              readonly property var txt: sid ? root.statText(sid) : ["", ""]
+              readonly property real peak: root.statPeak(sid, hist)
+              readonly property real frac: sid ? Math.max(0, Math.min(1, root.statValue(sid) / peak)) : 0
+              readonly property color ink: sid && root.statHot(sid) ? root.urgent : root.foreground
+              property real dragDx: 0
+              property real dragDy: 0
+              Component.onCompleted: secStats.tiles = secStats.tiles.concat([tile])
+              Component.onDestruction: secStats.tiles = secStats.tiles.filter(function(t) { return t !== tile })
+              visible: cell !== null
+              x: cell ? cell.c * secStats.unit : 0
+              y: cell ? cell.r * (secStats.rowH + secStats.gap) : 0
+              width: Math.max(0, sp * secStats.unit - secStats.gap)
+              height: rows * (secStats.rowH + secStats.gap) - secStats.gap
+              Behavior on x { enabled: secStats.arranging && secStats.dragId !== tile.sid; NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+              Behavior on y { enabled: secStats.arranging && secStats.dragId !== tile.sid; NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+              z: secStats.dragId === sid ? 10 : 0
+              transform: Translate { x: tile.dragDx; y: tile.dragDy }
+              opacity: secStats.dragId === sid ? 0.6 : 1
+              // caption and figure; big tiles get a big figure
+              Text { id: tCap; width: parent.width; elide: Text.ElideRight; textFormat: Text.PlainText; text: root.statShort[tile.sid] || ""; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
               Row {
-                id: spark
-                visible: root.setting("system", "netGraph") !== false
-                readonly property var hist: modelData[2]
-                readonly property real peak: Math.max.apply(null, [1].concat(hist))
-                Layout.fillWidth: true
-                Layout.preferredHeight: 22
-                spacing: 1
-                Repeater {
-                  model: 24
-                  Rectangle {
-                    required property int index
-                    readonly property real v: {
-                      var h = spark.hist, i = index - (24 - h.length)
-                      return i >= 0 ? h[i] / spark.peak : 0
-                    }
-                    width: Math.max(1, (spark.width - 23) / 24)
-                    height: Math.max(1, v * 22)
-                    y: 22 - height
-                    color: v > 0 ? root.foreground : root.faint
-                    opacity: 0.35 + v * 0.65
-                  }
+                id: tFig
+                y: tCap.height + (tile.compact ? 0 : 1)
+                spacing: 3
+                Text { id: tNum; textFormat: Text.PlainText; text: tile.txt[0]; color: tile.ink; font.family: root.fontFamily; font.pixelSize: tile.compact || tile.width < 70 ? 14 : 22; font.bold: true }
+                Text { anchors.baseline: tNum.baseline; textFormat: Text.PlainText; text: tile.txt[1]; color: root.isRate(tile.sid) ? root.dim : tile.ink; font.family: root.fontFamily; font.pixelSize: root.isRate(tile.sid) ? (tile.compact ? 9 : 10) : tNum.font.pixelSize; font.bold: !root.isRate(tile.sid) }
+              }
+              // bar: along the bottom
+              Rectangle {
+                visible: tile.look === "bar"
+                anchors.bottom: parent.bottom
+                width: parent.width; height: tile.compact ? 3 : 4; radius: 2; color: root.faint
+                Rectangle { width: parent.width * tile.frac; height: parent.height; radius: 2; color: tile.ink }
+              }
+              // graph: beside the figure in one row, under it when taller
+              Spark {
+                readonly property real besideW: tile.width - Math.max(tCap.implicitWidth, tFig.implicitWidth) - 6
+                visible: tile.look === "graph" && (!tile.compact || besideW >= 14)
+                x: tile.compact ? tile.width - width : 0
+                width: tile.compact ? Math.min(besideW, 70) : tile.width
+                n: Math.max(6, Math.min(24, Math.floor(width / 4)))
+                barH: tile.compact ? tile.height : Math.max(6, tile.height - (tFig.y + tFig.height + 3))
+                y: tile.height - barH
+                hist: tile.hist; peak: tile.peak
+              }
+              // edit mode: every tile outlined, the picked one bright
+              Rectangle {
+                visible: secStats.arranging
+                anchors.fill: parent; anchors.margins: -3
+                radius: 4; color: "transparent"
+                border.width: 1
+                border.color: root.systemPick === tile.sid ? root.foreground : root.faint
+              }
+              // where the dragged reading will land: a bar on that side of this one
+              Rectangle {
+                readonly property bool vert: tile.sp < secStats.cols
+                visible: secStats.dropId !== "" && secStats.dropId === tile.sid
+                color: root.urgent; radius: 1.5
+                width: vert ? 3 : tile.width + 6
+                height: vert ? tile.height + 6 : 3
+                x: vert ? (secStats.dropAfter ? tile.width + 3 : -6) : -3
+                y: vert ? -3 : (secStats.dropAfter ? tile.height + 3 : -6)
+              }
+              MouseArea {
+                enabled: secStats.arranging && tile.visible
+                anchors.fill: parent; anchors.margins: -3
+                preventStealing: true
+                cursorShape: secStats.dragId !== "" ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                property point start
+                onPressed: function(m) { start = Qt.point(m.x, m.y); root.systemPick = tile.sid }
+                onPositionChanged: function(m) {
+                  if (!pressed) return
+                  if (secStats.dragId === "" && Math.abs(m.x - start.x) + Math.abs(m.y - start.y) > 6) secStats.dragId = tile.sid
+                  if (secStats.dragId === "") return
+                  tile.dragDx = m.x - start.x; tile.dragDy = m.y - start.y
+                  var p = mapToItem(secStats, m.x, m.y)
+                  var c = secStats.tileAt(p)
+                  secStats.dropId = c ? c.sid : ""
+                  if (c) secStats.dropAfter = secStats.sideOf(c, p)
                 }
+                function finish() { tile.dragDx = 0; tile.dragDy = 0; secStats.dragId = ""; secStats.dropId = "" }
+                onReleased: {
+                  if (secStats.dragId !== "" && secStats.dropId !== "") root.moveSystemItem(secStats.dragId, secStats.dropId, secStats.dropAfter)
+                  finish()
+                }
+                onCanceled: finish()
               }
             }
           }
         }
+        // (the network readings are tiles in the flow above now)
+        Item { id: secNet; visible: false; Layout.preferredHeight: 0 }
 
         // -- workspaces -------------------------------------------------------
         Flow {
@@ -5121,8 +5794,9 @@ Item {
           id: menuList
           visible: root.searching && root.searchMonitor === win.monitorName
           Layout.fillWidth: true
-          Layout.fillHeight: true
-          Layout.preferredHeight: 0
+          // takes the app list's place: the room that's left, or the list's set height
+          Layout.fillHeight: root.heightMode("apps") === "auto"
+          Layout.preferredHeight: root.heightMode("apps") === "auto" ? 0 : root.heightPx("apps")
           Layout.minimumHeight: 0
           clip: true
           spacing: 2
@@ -5214,11 +5888,14 @@ Item {
             color: root.urgent
           }
           visible: !(root.searching && root.searchMonitor === win.monitorName)
+          readonly property string hmode: root.heightMode("apps")
           Layout.fillWidth: true
-          Layout.fillHeight: true
-          Layout.preferredHeight: 0
-          // all of it: when the sidebar runs out of room it scrolls as a whole
-          Layout.minimumHeight: contentHeight
+          // fit content: all of it, and the room that's left (when the sidebar runs out
+          // of room it scrolls as a whole); up to / fixed: that tall, scrolling inside
+          Layout.fillHeight: hmode === "auto"
+          Layout.preferredHeight: hmode === "auto" ? 0 : root.heightFor("apps", contentHeight)
+          Layout.maximumHeight: hmode === "auto" ? Number.POSITIVE_INFINITY : root.heightFor("apps", contentHeight)
+          Layout.minimumHeight: hmode === "auto" ? contentHeight : root.heightFor("apps", contentHeight)
           clip: true
           spacing: 2
           boundsBehavior: Flickable.StopAtBounds
@@ -5662,6 +6339,8 @@ Item {
           property string icon: ""
           property string label: ""
           property string status: ""
+          property bool opens: false     // clicking runs activated() instead of expanding
+          signal activated()
           readonly property bool expanded: root.qsSection === sectionId
           Layout.fillWidth: true
           implicitHeight: 34
@@ -5677,7 +6356,7 @@ Item {
             Text { textFormat: Text.PlainText; text: sh.status; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10; elide: Text.ElideRight; Layout.maximumWidth: 110 }
             Text { textFormat: Text.PlainText; text: sh.expanded ? "˅" : "›"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 12 }
           }
-          MouseArea { id: shMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleSection(sh.sectionId) }
+          MouseArea { id: shMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: sh.opens ? sh.activated() : root.toggleSection(sh.sectionId) }
         }
         component SwitchRow: Item {
           id: sw
@@ -6265,36 +6944,11 @@ Item {
                 SwitchRow { label: "Do not disturb"; on: root.dnd; onToggled: root.qsToggle("dnd") }
               }
 
-              // Sidebar: which plugin widgets and tray icons show in the bottom row
-              SectionHeader { sectionId: "sidebar"; icon: "\uf0db"; label: "Sidebar"
-                status: root.hiddenNow.length > 0 ? root.hiddenNow.length + " hidden" : "" }
-              SectionBody {
-                visible: root.qsSection === "sidebar"
-                Caption { text: "PLUGINS"; visible: root.pluginEntries.length > 0 }
-                Repeater {
-                  model: root.pluginEntries
-                  SwitchRow {
-                    required property var modelData
-                    label: (function() {
-                      var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : null
-                      var meta = w && w[modelData.id] ? w[modelData.id].metadata || {} : {}
-                      return String(meta.displayName || (meta.barWidget && meta.barWidget.displayName) || modelData.id)
-                    })()
-                    on: !root.isHidden(modelData.id)
-                    onToggled: root.setHidden(modelData.id, !root.isHidden(modelData.id))
-                  }
-                }
-                Caption { text: "TRAY ICONS"; visible: SystemTray.items.values.length > 0 }
-                Repeater {
-                  model: SystemTray.items
-                  SwitchRow {
-                    required property var modelData
-                    label: root.trayLabel(modelData)
-                    on: !root.isHidden("tray:" + modelData.id)
-                    onToggled: root.setHidden("tray:" + modelData.id, !root.isHidden("tray:" + modelData.id))
-                  }
-                }
-              }
+              // Sidebar: opens Edit sidebar (plugin icons are set in the bottom row's
+              // settings there, tray icons in the tray's)
+              SectionHeader { sectionId: "sidebar"; icon: "\uf0db"; label: "Sidebar"; opens: true
+                status: (root.hiddenNow.length > 0 ? root.hiddenNow.length + " hidden · " : "") + "Edit"
+                onActivated: root.startEditing(win.monitorName) }
 
               // Power
               SectionHeader { sectionId: "power"; icon: ""; label: "Power"; status: root.profileLabel(root.qsState.profile) + (root.batteryPresent ? " · " + root.batteryPct + "%" : "") }
@@ -6370,7 +7024,6 @@ Item {
               spacing: 6
               Repeater {
                 model: [
-                  { label: "Edit sidebar", icon: "\uf044" },
                   { label: "All settings", icon: "\uf013" }
                 ]
                 Rectangle {
@@ -6395,8 +7048,7 @@ Item {
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
-                      if (qsBtn.index === 0) root.startEditing(win.monitorName)
-                      else { root.closeQuickSettings(); root.enterSearch(win.monitorName); root.openMenu("setup") }
+                      root.closeQuickSettings(); root.enterSearch(win.monitorName); root.openMenu("setup")
                     }
                   }
                 }

@@ -205,6 +205,16 @@ summoned from:
 | Menu / search results | The search field | Fills down to the bottom row |
 | Tray menu, calendar, dock panels | The item that opened it | Content height |
 | Notifications | Top | Stack, newest first |
+| Add section picker (edit mode) | Under the edit header | Fills down to the bottom of the column |
+
+**Edit mode** follows the same rule as everything else: it happens in the column.
+A header with *Cancel*, *Save*, *Undo*, *+ Add section* and *Sidebar* sits at the
+top of the panel. Each section gets a dashed outline, and clicking one opens its
+settings in a box that floats over the column, so the section itself never moves:
+under it when there's room, above it when there isn't, along the bottom as a last
+resort. The box is at most 420 px tall and scrolls inside. One is open at a time.
+*Sidebar* opens the whole sidebar's settings the same way, under the header. Rows that don't fit the column's width put their options under
+their label.
 
 Overlay surfaces use the panel's own fill (`background`, opaque under glass),
 so they read as part of the panel rather than as a popup over it. A 1 px
@@ -231,11 +241,12 @@ background* opens the menu).
  │ Nothing is playing                │     ← empty state, Small/dim
  └───────────────────────────────────┘     ← SectionBody (0.05, r8, pad 10)
  ⌂  Power                Performance  ›
- [ Edit sidebar ] [ All settings ]         ← footer buttons (28)
+ [          All settings         ]         ← footer button (28)
  [        ✓ Rice up to date        ]
 ```
 
 Order inside a body: **master switch → status line → captioned groups → link**.
+The *Sidebar* row doesn't expand: it opens *Edit sidebar* (its status reads "N hidden · Edit").
 Each caption names the group below it. A group that would be empty shows a
 one-line dim empty state instead of disappearing (e.g. "Looking for devices…").
 
@@ -278,7 +289,7 @@ highlight that competes with it.
 
 ### Buttons
 
-- **Footer buttons** (*Edit sidebar*, *All settings*, *Update*): 28 high, r6,
+- **Footer buttons** (*All settings*, *Update*): 28 high, r6,
   0.05 rest, 0.12 hover, small icon + Small label, centred, and equal width
   when side by side.
 - **Icon buttons** (power actions): 40 high, glyph 13 over a Micro label, no
