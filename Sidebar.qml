@@ -1818,7 +1818,7 @@ Item {
     notifications: { show: false, count: 4 },
     search: { show: true, clip: true },
     apps: { running: true, group: true, compact: false, indicator: "bar", icons: false, badges: true, workspace: false, hints: true, hintSymbols: true },
-    bottom: { plugins: true },
+    bottom: { plugins: true, right: "plugins" },
     tray: { show: true, align: "right" },
     general: { background: "solid", autohide: false, autohideMode: "float", autohideEdge: "show", windowRounding: 10, windowBorder: 0, lookScope: "windows" }
   })
@@ -2011,7 +2011,7 @@ Item {
   readonly property var editSections: [
     { id: "clock", label: "CLOCK" }, { id: "status", label: "STATUS" }, { id: "system", label: "SYSTEM" }, { id: "workspaces", label: "WORKSPACES" },
     { id: "search", label: "SEARCH" }, { id: "media", label: "MEDIA" }, { id: "notifications", label: "NOTIFICATIONS" },
-    { id: "apps", label: "APP LIST" }, { id: "tray", label: "TRAY" }, { id: "bottom", label: "PLUGINS" }
+    { id: "apps", label: "APP LIST" }, { id: "tray", label: "TRAY" }, { id: "bottom", label: "BOTTOM ROW" }
   ].concat(root.extraSections.map(function(e) { return { id: e.id, label: root.widgetName(root.widgetOf(e.id)).toUpperCase() } }))
   function startEditing(monitorName) {
     root.closeOverview()     // it covers the window area, where the editor opens
@@ -2663,11 +2663,34 @@ Item {
       }
       // a workspace number under the pointer while dragging (to move the app there)
       property int dragWs: -1
+      // the workspace chips to show (the section and the bottom row share them):
+      // the first "count", plus any other workspace in use on this monitor
+      readonly property var wsIds: {
+        var ids = []
+        for (var n = 1; n <= root.setting("workspaces", "count"); n++) ids.push(n)
+        var all = Hyprland.workspaces.values
+        for (var i = 0; i < all.length; i++) {
+          var ws = all[i]
+          if (ws.id > 0 && ws.monitor && ws.monitor.name === win.monitorName && ids.indexOf(ws.id) === -1) ids.push(ws.id)
+        }
+        return ids.sort(function(a, b) { return a - b })
+      }
+      function focusWs(n) { root.run("hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ workspace = \"" + n + "\" })")) }
+      function wsScroll(e) {
+        var cur = win.monitor && win.monitor.activeWorkspace ? win.monitor.activeWorkspace.id : 1
+        var next = e.angleDelta.y < 0 ? cur + 1 : cur - 1
+        if (next >= 1) win.focusWs(next)
+      }
       function wsAt(x, y) {
-        if (!secWs.visible) return -1
-        var p = secWs.mapFromItem(win.contentItem, x, y)
-        var c = secWs.childAt(p.x, p.y)
-        return c && c.modelData !== undefined && typeof c.modelData === "number" ? c.modelData : -1
+        var rows = [secWs, bottomWs]
+        for (var i = 0; i < rows.length; i++) {
+          var r = rows[i]
+          if (!r.visible) continue
+          var p = r.mapFromItem(win.contentItem, x, y)
+          var c = r.childAt(p.x, p.y)
+          if (c && c.modelData !== undefined && typeof c.modelData === "number") return c.modelData
+        }
+        return -1
       }
       function updateDrag(x, y) {
         win.dragX = x; win.dragY = y
@@ -4324,13 +4347,24 @@ Item {
               visible: !root.addOpen && root.editSection === "bottom"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "PLUGINS" }
-              OptRow { label: "All plugin icons"; options: parent.parent.onOff; current: root.setting("bottom", "plugins"); onPicked: function(v) { root.setSetting("bottom", "plugins", v) } }
-              // where each plugin lives
+              id: bottomForm
+              readonly property bool wsMode: root.setting("bottom", "right") === "workspaces"
+              EdHeading { text: "BOTTOM ROW" }
+              OptRow { label: "Right side"; options: [["plugins", "plugins"], ["workspaces", "workspaces"]]; current: root.setting("bottom", "right"); onPicked: function(v) { root.setSetting("bottom", "right", v) } }
+              // -- workspaces on the right: the same settings as the workspaces section
+              EdHeading { visible: bottomForm.wsMode; text: "WORKSPACES" }
+              StepRow { visible: bottomForm.wsMode; label: "Always show"; value: root.setting("workspaces", "count"); min: 1; max: 10; onChanged: function(v) { root.setSetting("workspaces", "count", v) } }
+              OptRow { visible: bottomForm.wsMode; label: "Style"; options: [["numbers", "numbers"], ["dots", "dots"]]; current: root.setting("workspaces", "style"); onPicked: function(v) { root.setSetting("workspaces", "style", v) } }
+              OptRow { visible: bottomForm.wsMode; label: "Scroll to switch"; options: parent.parent.onOff; current: root.setting("workspaces", "scroll"); onPicked: function(v) { root.setSetting("workspaces", "scroll", v) } }
+              OptRow { visible: bottomForm.wsMode; label: "Also as a section"; options: parent.parent.onOff; current: root.setting("workspaces", "show"); onPicked: function(v) { root.setSetting("workspaces", "show", v) } }
+              Text { visible: bottomForm.wsMode; Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "These settings are shared with the workspaces section. Plugin icons are hidden while workspaces take the right side; their keyboard shortcuts still open their panels."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+              // -- plugins on the right
+              EdHeading { visible: !bottomForm.wsMode; text: "PLUGINS" }
+              OptRow { visible: !bottomForm.wsMode; label: "All plugin icons"; options: parent.parent.onOff; current: root.setting("bottom", "plugins"); onPicked: function(v) { root.setSetting("bottom", "plugins", v) } }
               // each plugin in the row: on or off (the same switch as quick settings › Sidebar)
-              EdHeading { visible: root.pluginEntries.length > 0; text: "IN THE ROW" }
+              EdHeading { visible: !bottomForm.wsMode && root.pluginEntries.length > 0; text: "IN THE ROW" }
               Repeater {
-                model: root.pluginEntries
+                model: bottomForm.wsMode ? [] : root.pluginEntries
                 OptRow {
                   required property var modelData
                   label: root.widgetName(modelData.id)
@@ -4340,12 +4374,12 @@ Item {
                 }
               }
               Text {
-                visible: root.pluginEntries.length > 0 && root.setting("bottom", "plugins") === false
+                visible: !bottomForm.wsMode && root.pluginEntries.length > 0 && root.setting("bottom", "plugins") === false
                 Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
                 text: "All plugin icons are off, so none of these show until that's on again."
                 color: root.urgent; font.family: root.fontFamily; font.pixelSize: 10
               }
-              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "The first icon is the sidebar's own: click it for quick settings. To show a plugin's panel in the sidebar instead, add it as a section (+ add section)."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+              Text { visible: !bottomForm.wsMode; Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "The first icon is the sidebar's own: click it for quick settings. To show a plugin's panel in the sidebar instead, add it as a section (+ add section)."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
             }
 
             // built-in sections: trim (widget sections have it in their own panel above)
@@ -4771,24 +4805,10 @@ Item {
           WheelHandler {
             enabled: root.setting("workspaces", "scroll") !== false
             acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-            onWheel: function(e) {
-              var cur = win.monitor && win.monitor.activeWorkspace ? win.monitor.activeWorkspace.id : 1
-              var next = e.angleDelta.y < 0 ? cur + 1 : cur - 1
-              if (next < 1) return
-              root.run("hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ workspace = \"" + next + "\" })"))
-            }
+            onWheel: function(e) { win.wsScroll(e) }
           }
           Repeater {
-            model: {
-              var ids = []
-              for (var n = 1; n <= root.setting("workspaces", "count"); n++) ids.push(n)
-              var all = Hyprland.workspaces.values
-              for (var i = 0; i < all.length; i++) {
-                var ws = all[i]
-                if (ws.id > 0 && ws.monitor && ws.monitor.name === win.monitorName && ids.indexOf(ws.id) === -1) ids.push(ws.id)
-              }
-              return ids.sort(function(a, b) { return a - b })
-            }
+            model: win.wsIds
             Rectangle {
               id: wsBox
               required property int modelData
@@ -4816,7 +4836,7 @@ Item {
               MouseArea {
                 anchors.fill: parent
                 cursorShape: Qt.PointingHandCursor
-                onClicked: root.run("hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ workspace = \"" + wsBox.modelData + "\" })"))
+                onClicked: win.focusWs(wsBox.modelData)
               }
             }
           }
@@ -5830,11 +5850,57 @@ Item {
               MouseArea { id: gearMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleQuickSettings(win.monitorName) }
             }
             Item { Layout.fillWidth: true }
-            // plugin widgets, in cells the size of tray icons
+            // right side, option 1: workspace chips (same look and settings as the
+            // workspaces section, shrunk to fit if there are many)
             Row {
+              id: bottomWs
+              visible: root.setting("bottom", "right") === "workspaces"
+              Layout.alignment: Qt.AlignVCenter
+              spacing: 4
+              readonly property bool dots: root.setting("workspaces", "style") === "dots"
+              readonly property real avail: secBottom.width - 28 - 12
+              readonly property real chip: Math.max(12, Math.min(dots ? 14 : 24, (avail - (win.wsIds.length - 1) * spacing) / Math.max(1, win.wsIds.length)))
+              WheelHandler {
+                enabled: root.setting("workspaces", "scroll") !== false
+                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                onWheel: function(e) { win.wsScroll(e) }
+              }
+              Repeater {
+                model: bottomWs.visible ? win.wsIds : []
+                Rectangle {
+                  id: bwsBox
+                  required property int modelData
+                  readonly property bool active: win.monitor && win.monitor.activeWorkspace && win.monitor.activeWorkspace.id === modelData
+                  readonly property bool occupied: {
+                    var all = Hyprland.workspaces.values
+                    for (var i = 0; i < all.length; i++) if (all[i].id === modelData) return all[i].toplevels.values.length > 0
+                    return false
+                  }
+                  readonly property bool dropHere: win.dragWs === modelData
+                  width: bottomWs.chip; height: bottomWs.chip
+                  radius: bottomWs.dots ? width / 2 : 4
+                  anchors.verticalCenter: parent ? parent.verticalCenter : undefined
+                  color: dropHere ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.35) : (active ? root.foreground : (bottomWs.dots && occupied ? root.dim : "transparent"))
+                  border.width: 1
+                  border.color: dropHere ? root.urgent : (active ? root.foreground : (occupied ? root.dim : root.faint))
+                  Text {
+                    visible: !bottomWs.dots
+                    anchors.centerIn: parent
+                    textFormat: Text.PlainText
+                    text: ((bwsBox.modelData - 1) % 10 + 1).toString()
+                    color: bwsBox.active ? root.background : (bwsBox.occupied ? root.foreground : root.dim)
+                    font.family: root.fontFamily; font.pixelSize: bottomWs.chip < 20 ? 9 : 11; font.bold: bwsBox.active
+                  }
+                  MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: win.focusWs(bwsBox.modelData) }
+                }
+              }
+            }
+            // right side, option 2: plugin widgets, in cells the size of tray icons
+            Row {
+              visible: root.setting("bottom", "right") !== "workspaces"
               spacing: 4
               Repeater {
-                model: !root.setting("bottom", "plugins") ? [] : root.pluginEntries.filter(function(e) { return !root.isHidden(e.id) })
+                model: !root.setting("bottom", "plugins") || root.setting("bottom", "right") === "workspaces" ? [] : root.pluginEntries.filter(function(e) { return !root.isHidden(e.id) })
                 Item {
                   id: pcell
                   required property var modelData

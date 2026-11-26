@@ -175,7 +175,8 @@ default order goes from glance to act:
 4. **search** — the entry to the Super+Space menu, which types in place
 5. **apps** — pinned apps, then running ones; this is the only section that grows to fill the space
 6. **widgets** — Omarchy plugins and panels placed as sections (e.g. agents)
-7. **bottom** — the settings gear, tray and plugin icons, pinned to the bottom edge
+7. **bottom** — the settings gear on the left; plugin icons or workspace chips
+   on the right (*Edit sidebar › Bottom row › Right side*); pinned to the bottom edge
 8. **media / notifications** — appear when there's something to show
 
 The order, visibility and per-section options live in
