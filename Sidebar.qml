@@ -3422,7 +3422,8 @@ Item {
           property bool noPanel: false
           property int tries: 0
 
-          readonly property bool collapsed: root.setting(secId, "collapsed") === true
+          // folded by clicking the title; only while the title shows, so a section can never vanish
+          readonly property bool collapsed: root.setting(secId, "title") === true && root.setting(secId, "collapsed") === true
           Text {
             visible: root.setting(xsec.secId, "title") === true   // off unless turned on in the editor
             Layout.fillWidth: true
@@ -3438,7 +3439,10 @@ Item {
           readonly property bool shrink: root.setting(secId, "fit") === "shrink"
           readonly property real natW: xsec.panel ? Math.max(1, xsec.panel.contentWidth) : 1
           readonly property real k: shrink ? Math.min(1, xbody.width / natW) : 1
-          readonly property real fullH: xsec.panel ? Math.max(0, xsec.panel.contentHeight) * xsec.k : (xsec.noPanel ? 20 : 0)
+          // a widget can ask to sit tight (no popup padding): its content's own height
+          readonly property bool tight: !!xsec.panel && !!xsec.panel.owner && xsec.panel.owner.tightInSidebar === true
+          readonly property real panelH: xsec.panel ? (xsec.tight ? xsec.panel.loadedContentHeight : xsec.panel.contentHeight) : 0
+          readonly property real fullH: xsec.panel ? Math.max(0, xsec.panelH) * xsec.k : (xsec.noPanel ? 20 : 0)
           readonly property real cropTop: root.cropOf(secId, "top")
           readonly property real cropBottom: root.cropOf(secId, "bottom")
           // what's left after trimming the top and bottom
@@ -3460,7 +3464,7 @@ Item {
               id: xinner
               y: -xsec.cropTop
               width: xsec.shrink ? xsec.natW : xbody.width
-              height: xsec.panel ? Math.max(0, xsec.panel.contentHeight) : 0
+              height: xsec.panel ? Math.max(0, xsec.panelH) : 0
               scale: xsec.k
               transformOrigin: Item.TopLeft
             }
@@ -4823,7 +4827,6 @@ Item {
               OptRow { label: "Title"; options: parent.parent.onOff; current: root.setting(root.editSection, "title") === true; onPicked: function(v) { root.setSetting(root.editSection, "title", v) } }
               OptRow { label: "Fit"; options: [["squeeze", "squeeze"], ["shrink", "shrink"]]; current: root.setting(root.editSection, "fit") === "shrink" ? "shrink" : "squeeze"; onPicked: function(v) { root.setSetting(root.editSection, "fit", v) } }
               HeightRows { sid: root.editSection; fullH: win.sectionFullH(root.editSection) }
-              OptRow { label: "Folded"; options: parent.parent.onOff; current: root.setting(root.editSection, "collapsed") === true; onPicked: function(v) { root.setSetting(root.editSection, "collapsed", v) } }
               // cut blank space (or unwanted bits) off the top / bottom; also by dragging the outline's edge handles
               StepRow { label: "Trim top"; value: root.cropOf(root.editSection, "top"); step: 4; min: 0; max: 600; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, v, root.cropOf(root.editSection, "bottom")) } }
               StepRow { label: "Trim bottom"; value: root.cropOf(root.editSection, "bottom"); step: 4; min: 0; max: 600; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, root.cropOf(root.editSection, "top"), v) } }
