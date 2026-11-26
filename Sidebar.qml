@@ -1065,7 +1065,8 @@ Item {
     function edit() { if (root.editing) root.stopEditing(); else root.startEditing() }
     function overview() { root.toggleOverview() }
     function settings(section: string) { root.openSettings(section) }
-    function settingsPage(page: string) { if (!root.qsOpen) root.openSettings(""); root.qsPage = page }
+    // the old detail pages are now sections ("audio" was the sound page)
+    function settingsPage(page: string) { if (!root.qsOpen) root.openSettings(""); root.qsSection = page === "audio" ? "sound" : page }
     function searchFor(text: string) { root.enterSearch(); root.query = text }
   }
 
@@ -1384,25 +1385,24 @@ Item {
   }
   function closeTrayMenu() { root.trayMenuSub = null; root.trayMenuItem = null }
 
-  // ---- settings pages (detail views inside the settings area) --------------
-  property string qsPage: ""
-  onQsOpenChanged: if (!qsOpen) { qsPage = ""; qsSection = ""; pwSsid = "" } else checkForUpdates(false)
-  onQsPageChanged: {
+  // ---- settings sections: everything is edited right in the open section ----
+  onQsOpenChanged: if (!qsOpen) { qsSection = ""; pwSsid = "" } else checkForUpdates(false)
+  readonly property string qsLive: qsOpen ? qsSection : ""
+  onQsLiveChanged: {
     pwSsid = ""
-    if (root.wifiDevice) root.wifiDevice.scannerEnabled = qsPage === "network"
-    if (root.btAdapter) root.btAdapter.discovering = qsPage === "bluetooth"
-    if (qsPage === "network") dnsProc.running = true
-    if (qsPage === "display") displayPoll.running = true
+    if (root.wifiDevice) root.wifiDevice.scannerEnabled = qsLive === "network"
+    if (root.btAdapter) root.btAdapter.discovering = qsLive === "bluetooth"
+    if (qsLive === "network") dnsProc.running = true
+    if (qsLive === "display") displayPoll.running = true
   }
   // Open settings at a section (keybinds); the same section again closes it.
   function openSettings(section) {
-    if (root.qsOpen && root.qsPage === "" && (!section || root.qsSection === section)) { root.qsOpen = false; return }
+    if (root.qsOpen && (!section || root.qsSection === section)) { root.qsOpen = false; return }
     root.closeOverview()
     root.exitSearch()
     root.closeTrayMenu()
     root.qsMonitor = Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : ""
     if (section) root.qsSection = section
-    root.qsPage = ""
     root.qsOpen = true
     qsPoll.running = true
   }
@@ -5927,7 +5927,6 @@ Item {
 
             ColumnLayout {
               id: accordion
-              visible: root.qsPage === ""
               Layout.fillWidth: true
               spacing: 2
 
@@ -5937,201 +5936,10 @@ Item {
               SectionBody {
                 visible: root.qsSection === "network"
                 SwitchRow { label: "Wi-Fi"; on: root.qsState.wifi; onToggled: root.qsToggle("wifi") }
-                Text { Layout.fillWidth: true; textFormat: Text.PlainText; elide: Text.ElideRight; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
-                  text: root.qsState.netName ? "Connected: " + root.qsState.netName : "Not connected" }
-                LinkRow { label: "Networks & DNS"; onActivated: root.qsPage = "network" }
-              }
-
-              // Bluetooth
-              SectionHeader { sectionId: "bluetooth"; icon: ""; label: "Bluetooth"
-                status: !root.btAdapter || !root.btAdapter.enabled ? "Off" : (function() { var n = root.btDevices.filter(function(d) { return d.connected }).length; return n > 0 ? n + " connected" : "On" })() }
-              SectionBody {
-                visible: root.qsSection === "bluetooth"
-                SwitchRow { label: "Bluetooth"; on: !!root.btAdapter && root.btAdapter.enabled; onToggled: root.qsToggle("bt") }
-                Repeater {
-                  model: root.btAdapter && root.btAdapter.enabled ? root.btDevices : []
-                  ChoiceRow {
-                    required property var modelData
-                    label: String(modelData.name || modelData.deviceName || modelData.address)
-                    hint: modelData.connected ? (modelData.batteryAvailable ? Math.round(modelData.battery * 100) + "%" : "connected") : ""
-                    selected: modelData.connected
-                    onChosen: root.btToggleDevice(modelData)
-                  }
-                }
-                LinkRow { label: "Devices & pairing"; onActivated: root.qsPage = "bluetooth" }
-              }
-
-              // Sound
-              SectionHeader { sectionId: "sound"; icon: ""; label: "Sound"
-                status: root.sink && root.sink.audio ? (root.sink.audio.muted ? "Muted" : Math.round(root.sink.audio.volume * 100) + "%") : "" }
-              SectionBody {
-                visible: root.qsSection === "sound"
-                SliderRow { label: "OUT"; value: root.sink && root.sink.audio ? root.sink.audio.volume : 0; muted: !!root.sink && !!root.sink.audio && root.sink.audio.muted
-                  onMoved: function(v) { if (root.sink && root.sink.audio) root.sink.audio.volume = v }
-                  onMuteClicked: if (root.sink && root.sink.audio) root.sink.audio.muted = !root.sink.audio.muted }
-                SliderRow { label: "MIC"; visible: !!root.source && !!root.source.audio; value: root.source && root.source.audio ? root.source.audio.volume : 0; muted: !!root.source && !!root.source.audio && root.source.audio.muted
-                  onMoved: function(v) { if (root.source && root.source.audio) root.source.audio.volume = v }
-                  onMuteClicked: if (root.source && root.source.audio) root.source.audio.muted = !root.source.audio.muted }
-                Repeater {
-                  model: root.sinkNodes
-                  ChoiceRow {
-                    required property var modelData
-                    label: root.nodeName(modelData)
-                    selected: !!root.sink && root.sink.id === modelData.id
-                    onChosen: root.setSink(modelData)
-                  }
-                }
-                LinkRow { label: "Inputs & app volumes"; onActivated: root.qsPage = "audio" }
-              }
-
-              // Display
-              SectionHeader { sectionId: "display"; icon: ""; label: "Display"
-              status: root.refreshRate > 0 ? root.resLabel(root.modeRes) + " · " + Math.round(root.refreshRate) + " Hz" : (root.qsState.night ? "Night on" : "Night off") }
-              SectionBody {
-                visible: root.qsSection === "display"
-                SwitchRow { label: "Night light"; on: root.qsState.night; onToggled: root.qsToggle("night") }
-                LinkRow { label: "Brightness, scale & text"; onActivated: root.qsPage = "display" }
-                LinkRow { label: "Theme & background"; onActivated: { root.closeQuickSettings(); root.enterSearch(win.monitorName); root.openMenu("appearance") } }
-              }
-
-              // Notifications
-              SectionHeader { sectionId: "notifications"; icon: ""; label: "Notifications"; status: root.dnd ? "Silenced" : "On" }
-              SectionBody {
-                visible: root.qsSection === "notifications"
-                SwitchRow { label: "Do not disturb"; on: root.dnd; onToggled: root.qsToggle("dnd") }
-              }
-
-              // Sidebar: which plugin widgets and tray icons show in the bottom row
-              SectionHeader { sectionId: "sidebar"; icon: "\uf0db"; label: "Sidebar"
-                status: root.hiddenNow.length > 0 ? root.hiddenNow.length + " hidden" : "" }
-              SectionBody {
-                visible: root.qsSection === "sidebar"
-                Caption { text: "PLUGINS"; visible: root.pluginEntries.length > 0 }
-                Repeater {
-                  model: root.pluginEntries
-                  SwitchRow {
-                    required property var modelData
-                    label: (function() {
-                      var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : null
-                      var meta = w && w[modelData.id] ? w[modelData.id].metadata || {} : {}
-                      return String(meta.displayName || (meta.barWidget && meta.barWidget.displayName) || modelData.id)
-                    })()
-                    on: !root.isHidden(modelData.id)
-                    onToggled: root.setHidden(modelData.id, !root.isHidden(modelData.id))
-                  }
-                }
-                Caption { text: "TRAY ICONS"; visible: SystemTray.items.values.length > 0 }
-                Repeater {
-                  model: SystemTray.items
-                  SwitchRow {
-                    required property var modelData
-                    label: root.trayLabel(modelData)
-                    on: !root.isHidden("tray:" + modelData.id)
-                    onToggled: root.setHidden("tray:" + modelData.id, !root.isHidden("tray:" + modelData.id))
-                  }
-                }
-              }
-
-              // Power
-              SectionHeader { sectionId: "power"; icon: ""; label: "Power"; status: root.profileLabel(root.qsState.profile) + (root.batteryPresent ? " · " + root.batteryPct + "%" : "") }
-              SectionBody {
-                visible: root.qsSection === "power"
-                RowLayout {
-                  Layout.fillWidth: true
-                  visible: root.qsState.profile !== ""
-                  spacing: 4
-                  Repeater {
-                    model: [["power-saver", "Saver"], ["balanced", "Balanced"], ["performance", "Perform."]]
-                    Rectangle {
-                      required property var modelData
-                      readonly property bool sel: root.qsState.profile === modelData[0]
-                      Layout.fillWidth: true
-                      Layout.preferredHeight: 26
-                      radius: 5
-                      color: sel ? root.foreground : (pMouse.containsMouse ? root.faint : "transparent")
-                      border.width: sel ? 0 : 1
-                      border.color: root.faint
-                      Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: modelData[1]; color: parent.sel ? root.background : root.dim; font.family: root.fontFamily; font.pixelSize: 10; font.bold: parent.sel }
-                      MouseArea { id: pMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setProfile(modelData[0]) }
-                    }
-                  }
-                }
-                SwitchRow { label: "Stay awake"; on: root.qsState.idle; onToggled: root.qsToggle("idle") }
-                RowLayout {
-                  Layout.fillWidth: true
-                  spacing: 2
-                  Repeater {
-                    model: [["", "Lock", "omarchy-system-lock"], ["", "Sleep", "systemctl suspend"], ["", "Logout", "omarchy-system logout"],
-                            ["", "Reboot", "omarchy-system reboot"], ["", "Off", "omarchy-system shutdown"]]
-                    Rectangle {
-                      required property var modelData
-                      Layout.fillWidth: true
-                      Layout.preferredHeight: 40
-                      radius: 6
-                      color: sMouse.containsMouse ? root.faint : "transparent"
-                      Column {
-                        anchors.centerIn: parent
-                        spacing: 2
-                        Text { anchors.horizontalCenter: parent.horizontalCenter; textFormat: Text.PlainText; text: modelData[0]; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 13 }
-                        Text { anchors.horizontalCenter: parent.horizontalCenter; textFormat: Text.PlainText; text: modelData[1]; color: root.dim; font.family: root.fontFamily; font.pixelSize: 8 }
-                      }
-                      MouseArea { id: sMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.systemAction(modelData[2]) }
-                    }
-                  }
-                }
-              }
-            }
-
-            // ---- detail pages ----------------------------------------------------
-            component PageHeader: Rectangle {
-              id: ph
-              property string title: ""
-              Layout.fillWidth: true
-              implicitHeight: 32
-              radius: 6
-              color: phMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent"
-              Text { anchors.verticalCenter: parent.verticalCenter; x: 6; textFormat: Text.PlainText; text: "‹  " + ph.title; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 12; font.bold: true }
-              MouseArea { id: phMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.qsPage = "" }
-            }
-            component Caption: Text {
-              Layout.fillWidth: true
-              Layout.topMargin: 4
-              textFormat: Text.PlainText
-              color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1
-            }
-            component Segmented: RowLayout {
-              id: seg
-              property var options: []      // [[value, label], ...]
-              property string current: ""
-              signal picked(string value)
-              Layout.fillWidth: true
-              spacing: 4
-              Repeater {
-                model: seg.options
-                Rectangle {
-                  required property var modelData
-                  readonly property bool sel: seg.current === modelData[0]
-                  Layout.fillWidth: true
-                  Layout.preferredHeight: 26
-                  radius: 5
-                  color: sel ? root.foreground : (sgMouse.containsMouse ? root.faint : "transparent")
-                  border.width: sel ? 0 : 1
-                  border.color: root.faint
-                  Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: modelData[1]; color: parent.sel ? root.background : root.dim; font.family: root.fontFamily; font.pixelSize: 10; font.bold: parent.sel }
-                  MouseArea { id: sgMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: seg.picked(modelData[0]) }
-                }
-              }
-            }
-
-            // Network page
-            ColumnLayout {
-              visible: root.qsPage === "network"
-              Layout.fillWidth: true
-              spacing: 4
-              PageHeader { title: "Network" }
-              SectionBody {
-                SwitchRow { label: "Wi-Fi"; on: root.qsState.wifi; onToggled: root.qsToggle("wifi") }
-                Caption { text: root.wifiDevice ? "WI-FI NETWORKS" : "NO WI-FI ADAPTER"; visible: true }
+                Text { Layout.fillWidth: true; visible: root.qsState.netType === "ethernet" || !root.qsState.wifi
+                  textFormat: Text.PlainText; elide: Text.ElideRight; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
+                  text: root.qsState.netType === "ethernet" ? "Connected by Ethernet" : root.qsState.netName ? "Connected: " + root.qsState.netName : "Not connected" }
+                Caption { text: root.wifiDevice ? "WI-FI NETWORKS" : "NO WI-FI ADAPTER"; visible: !root.wifiDevice || root.qsState.wifi }
                 ListView {
                   id: wifiList
                   visible: !!root.wifiDevice && root.qsState.wifi
@@ -6186,15 +5994,12 @@ Item {
                   onPicked: function(v) { root.setDns(v) }
                 }
               }
-            }
 
-            // Bluetooth page
-            ColumnLayout {
-              visible: root.qsPage === "bluetooth"
-              Layout.fillWidth: true
-              spacing: 4
-              PageHeader { title: "Bluetooth" }
+              // Bluetooth
+              SectionHeader { sectionId: "bluetooth"; icon: ""; label: "Bluetooth"
+                status: !root.btAdapter || !root.btAdapter.enabled ? "Off" : (function() { var n = root.btDevices.filter(function(d) { return d.connected }).length; return n > 0 ? n + " connected" : "On" })() }
               SectionBody {
+                visible: root.qsSection === "bluetooth"
                 SwitchRow { label: "Bluetooth"; on: !!root.btAdapter && root.btAdapter.enabled; onToggled: root.qsToggle("bt") }
                 Caption { text: "MY DEVICES"; visible: root.btDevices.length > 0 }
                 Repeater {
@@ -6205,7 +6010,7 @@ Item {
                     spacing: 4
                     ChoiceRow {
                       label: String(modelData.name || modelData.deviceName || modelData.address)
-                      hint: modelData.connected ? "connected" : ""
+                      hint: modelData.connected ? (modelData.batteryAvailable ? Math.round(modelData.battery * 100) + "%" : "connected") : ""
                       selected: modelData.connected
                       onChosen: root.btToggleDevice(modelData)
                     }
@@ -6232,15 +6037,18 @@ Item {
                   }
                 }
               }
-            }
 
-            // Audio page
-            ColumnLayout {
-              visible: root.qsPage === "audio"
-              Layout.fillWidth: true
-              spacing: 4
-              PageHeader { title: "Sound" }
+              // Sound
+              SectionHeader { sectionId: "sound"; icon: ""; label: "Sound"
+                status: root.sink && root.sink.audio ? (root.sink.audio.muted ? "Muted" : Math.round(root.sink.audio.volume * 100) + "%") : "" }
               SectionBody {
+                visible: root.qsSection === "sound"
+                SliderRow { label: "OUT"; value: root.sink && root.sink.audio ? root.sink.audio.volume : 0; muted: !!root.sink && !!root.sink.audio && root.sink.audio.muted
+                  onMoved: function(v) { if (root.sink && root.sink.audio) root.sink.audio.volume = v }
+                  onMuteClicked: if (root.sink && root.sink.audio) root.sink.audio.muted = !root.sink.audio.muted }
+                SliderRow { label: "MIC"; visible: !!root.source && !!root.source.audio; value: root.source && root.source.audio ? root.source.audio.volume : 0; muted: !!root.source && !!root.source.audio && root.source.audio.muted
+                  onMoved: function(v) { if (root.source && root.source.audio) root.source.audio.volume = v }
+                  onMuteClicked: if (root.source && root.source.audio) root.source.audio.muted = !root.source.audio.muted }
                 Caption { text: "OUTPUT" }
                 Repeater {
                   model: root.sinkNodes
@@ -6270,15 +6078,12 @@ Item {
                   }
                 }
               }
-            }
 
-            // Display page
-            ColumnLayout {
-              visible: root.qsPage === "display"
-              Layout.fillWidth: true
-              spacing: 4
-              PageHeader { title: "Display" }
+              // Display
+              SectionHeader { sectionId: "display"; icon: ""; label: "Display"
+              status: root.refreshRate > 0 ? root.resLabel(root.modeRes) + " · " + Math.round(root.refreshRate) + " Hz" : (root.qsState.night ? "Night on" : "Night off") }
               SectionBody {
+                visible: root.qsSection === "display"
                 Caption { text: "BRIGHTNESS"; visible: root.brightness >= 0 }
                 SliderRow { visible: root.brightness >= 0; label: ""; value: Math.max(0, root.brightness) / 100; onMoved: function(v) { root.setBrightness(v) } }
                 Caption { text: "RESOLUTION" + (root.modeSize ? " · " + root.modeSize : ""); visible: root.resolutionOptions.length > 1 }
@@ -6319,11 +6124,116 @@ Item {
                   Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: root.textPx + " px"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11 }
                 }
                 SwitchRow { label: "Night light"; on: root.qsState.night; onToggled: root.qsToggle("night") }
+                LinkRow { label: "Theme & background"; onActivated: { root.closeQuickSettings(); root.enterSearch(win.monitorName); root.openMenu("appearance") } }
+              }
+
+              // Notifications
+              SectionHeader { sectionId: "notifications"; icon: ""; label: "Notifications"; status: root.dnd ? "Silenced" : "On" }
+              SectionBody {
+                visible: root.qsSection === "notifications"
+                SwitchRow { label: "Do not disturb"; on: root.dnd; onToggled: root.qsToggle("dnd") }
+              }
+
+              // Sidebar: which plugin widgets and tray icons show in the bottom row
+              SectionHeader { sectionId: "sidebar"; icon: "\uf0db"; label: "Sidebar"
+                status: root.hiddenNow.length > 0 ? root.hiddenNow.length + " hidden" : "" }
+              SectionBody {
+                visible: root.qsSection === "sidebar"
+                Caption { text: "PLUGINS"; visible: root.pluginEntries.length > 0 }
+                Repeater {
+                  model: root.pluginEntries
+                  SwitchRow {
+                    required property var modelData
+                    label: (function() {
+                      var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : null
+                      var meta = w && w[modelData.id] ? w[modelData.id].metadata || {} : {}
+                      return String(meta.displayName || (meta.barWidget && meta.barWidget.displayName) || modelData.id)
+                    })()
+                    on: !root.isHidden(modelData.id)
+                    onToggled: root.setHidden(modelData.id, !root.isHidden(modelData.id))
+                  }
+                }
+                Caption { text: "TRAY ICONS"; visible: SystemTray.items.values.length > 0 }
+                Repeater {
+                  model: SystemTray.items
+                  SwitchRow {
+                    required property var modelData
+                    label: root.trayLabel(modelData)
+                    on: !root.isHidden("tray:" + modelData.id)
+                    onToggled: root.setHidden("tray:" + modelData.id, !root.isHidden("tray:" + modelData.id))
+                  }
+                }
+              }
+
+              // Power
+              SectionHeader { sectionId: "power"; icon: ""; label: "Power"; status: root.profileLabel(root.qsState.profile) + (root.batteryPresent ? " · " + root.batteryPct + "%" : "") }
+              SectionBody {
+                visible: root.qsSection === "power"
+                Caption { text: "POWER MODE"; visible: root.qsState.profile !== "" }
+                Segmented {
+                  visible: root.qsState.profile !== ""
+                  options: [["power-saver", "Saver"], ["balanced", "Balanced"], ["performance", "Performance"]]
+                  current: root.qsState.profile
+                  onPicked: function(v) { root.setProfile(v) }
+                }
+                SwitchRow { label: "Stay awake"; on: root.qsState.idle; onToggled: root.qsToggle("idle") }
+                RowLayout {
+                  Layout.fillWidth: true
+                  spacing: 2
+                  Repeater {
+                    model: [["", "Lock", "omarchy-system-lock"], ["", "Sleep", "systemctl suspend"], ["", "Logout", "omarchy-system logout"],
+                            ["", "Reboot", "omarchy-system reboot"], ["", "Off", "omarchy-system shutdown"]]
+                    Rectangle {
+                      required property var modelData
+                      Layout.fillWidth: true
+                      Layout.preferredHeight: 40
+                      radius: 6
+                      color: sMouse.containsMouse ? root.faint : "transparent"
+                      Column {
+                        anchors.centerIn: parent
+                        spacing: 2
+                        Text { anchors.horizontalCenter: parent.horizontalCenter; textFormat: Text.PlainText; text: modelData[0]; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 13 }
+                        Text { anchors.horizontalCenter: parent.horizontalCenter; textFormat: Text.PlainText; text: modelData[1]; color: root.dim; font.family: root.fontFamily; font.pixelSize: 8 }
+                      }
+                      MouseArea { id: sMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.systemAction(modelData[2]) }
+                    }
+                  }
+                }
+              }
+            }
+
+            // ---- shared pieces of the sections ----------------------------------
+            component Caption: Text {
+              Layout.fillWidth: true
+              Layout.topMargin: 4
+              textFormat: Text.PlainText
+              color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1
+            }
+            component Segmented: RowLayout {
+              id: seg
+              property var options: []      // [[value, label], ...]
+              property string current: ""
+              signal picked(string value)
+              Layout.fillWidth: true
+              spacing: 4
+              Repeater {
+                model: seg.options
+                Rectangle {
+                  required property var modelData
+                  readonly property bool sel: seg.current === modelData[0]
+                  Layout.fillWidth: true
+                  Layout.preferredHeight: 26
+                  radius: 5
+                  color: sel ? root.foreground : (sgMouse.containsMouse ? root.faint : "transparent")
+                  border.width: sel ? 0 : 1
+                  border.color: root.faint
+                  Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: modelData[1]; color: parent.sel ? root.background : root.dim; font.family: root.fontFamily; font.pixelSize: 10; font.bold: parent.sel }
+                  MouseArea { id: sgMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: seg.picked(modelData[0]) }
+                }
               }
             }
 
             RowLayout {
-              visible: root.qsPage === ""
               Layout.fillWidth: true
               Layout.topMargin: 6
               spacing: 6
@@ -6364,7 +6274,6 @@ Item {
 
             Rectangle {
               id: updBtn
-              visible: root.qsPage === ""
               readonly property bool ready: Number(root.updateCount) > 0 && !root.updating
               readonly property bool busy: root.updating || root.updateCount === ""
               Layout.fillWidth: true
