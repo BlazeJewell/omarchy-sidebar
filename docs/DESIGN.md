@@ -185,8 +185,10 @@ and are edited in place with *Edit sidebar*.
 
 Rules:
 - **Only one section flexes.** The app list takes the leftover height and
-  scrolls. Every other section has a natural height, or a `maxH` with
-  `fit: squeeze` for widgets.
+  scrolls. Every other section (widgets included) has a **Height** set in
+  *Edit sidebar*: *fit content* (the default), *up to* N px, or *fixed* N px.
+  The last two scroll whatever doesn't fit, inside the section. The bottom row
+  is always one fixed row.
 - **Sections are full-width.** No side-by-side sections. Inside a section, a row
   may split into columns (e.g. stats, network down/up).
 - **A section has no title by default.** Its content is its title, e.g. the
@@ -341,7 +343,8 @@ Before adding a section, setting or overlay:
       `Segmented` and `Caption` where they fit.
 - [ ] Settings are editable where they're shown, with no detail page and no
       "more ›" link for something that fits in the section.
-- [ ] Only the app list flexes. Anything else has a natural height or a `maxH`.
+- [ ] Only the app list flexes. Anything else fits its content, or has an
+      *up to* / *fixed* height and scrolls inside.
 - [ ] Polling or scanning runs only while the thing is visible.
 - [ ] Motion uses `Style.duration` and comes from or goes to the panel.
 - [ ] Outside text uses `Text.PlainText` and elides.

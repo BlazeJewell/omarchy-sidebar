@@ -1971,6 +1971,30 @@ Item {
     else { next[section] = next[section] || {}; next[section][key] = value }
     root.saveSettings(next)
   }
+  // A section's height: "auto" fits its content, "max" fits it up to heightPx and
+  // scrolls past that, "fixed" is always heightPx tall and scrolls if the content
+  // is taller. (Widget sections saved before this used "maxH" for "max".)
+  function heightMode(id) {
+    var m = root.setting(id, "height")
+    if (m === "fixed" || m === "max" || m === "auto") return m
+    return (Number(root.setting(id, "maxH")) || 0) > 0 ? "max" : "auto"
+  }
+  function heightPx(id) { return Number(root.setting(id, "heightPx")) || Number(root.setting(id, "maxH")) || 200 }
+  function setHeight(id, mode, px) {
+    var next = JSON.parse(JSON.stringify(root.userSettings))
+    next[id] = next[id] || {}
+    next[id].height = mode
+    next[id].heightPx = Math.max(40, Math.round(px))
+    delete next[id].maxH
+    root.saveSettings(next)
+  }
+  // the height a section's box gets for its content height
+  function heightFor(id, contentH) {
+    var m = root.heightMode(id)
+    if (m === "fixed") return root.heightPx(id)
+    if (m === "max") return Math.min(contentH, root.heightPx(id))
+    return contentH
+  }
   function resetSection(section) {
     var next = JSON.parse(JSON.stringify(root.userSettings))
     delete next[section]
@@ -3295,7 +3319,6 @@ Item {
           readonly property real natW: xsec.panel ? Math.max(1, xsec.panel.contentWidth) : 1
           readonly property real k: shrink ? Math.min(1, xbody.width / natW) : 1
           readonly property real fullH: xsec.panel ? Math.max(0, xsec.panel.contentHeight) * xsec.k : (xsec.noPanel ? 20 : 0)
-          readonly property int maxH: root.setting(secId, "maxH") || 0
           readonly property real cropTop: root.cropOf(secId, "top")
           readonly property real cropBottom: root.cropOf(secId, "bottom")
           // what's left after trimming the top and bottom
@@ -3304,7 +3327,7 @@ Item {
             id: xbody
             visible: !xsec.collapsed
             Layout.fillWidth: true
-            Layout.preferredHeight: xsec.maxH > 0 ? Math.min(xsec.visH, xsec.maxH) : xsec.visH
+            Layout.preferredHeight: root.heightFor(xsec.secId, xsec.visH)
             // when the sidebar runs out of room it shrinks (and scrolls) instead of
             // pushing the sections above it off the screen
             Layout.minimumHeight: Math.min(Layout.preferredHeight, 90)
@@ -3492,24 +3515,32 @@ Item {
       // A built-in section with a trim goes into a clipping box whose content is
       // shifted up by the top trim and cut short by the bottom one. Untrimmed
       // sections stay as they are. (Widget sections trim themselves.)
+      // The same box gives a section a set height ("max" / "fixed"), scrolling
+      // what doesn't fit. (Not the bottom row: it's one fixed row.)
       function isTrimmable(id) { return id !== "apps" && String(id).indexOf("w:") !== 0 }
+      function isSizable(id) { return id !== "apps" && id !== "bottom" }
       readonly property var trimmedIds: root.sectionOrder.filter(function(id) {
-        return win.isTrimmable(id) && (root.cropOf(id, "top") > 0 || root.cropOf(id, "bottom") > 0)
+        return win.isTrimmable(id) && (root.cropOf(id, "top") > 0 || root.cropOf(id, "bottom") > 0 || (win.isSizable(id) && root.heightMode(id) !== "auto"))
       })
       onTrimmedIdsChanged: Qt.callLater(win.applySectionOrder)
       property var trimBoxes: ({})
       property int trimRev: 0
       Component {
         id: trimBoxComp
-        Item {
+        Flickable {
           id: tb
           property string sid: ""
           readonly property alias col: tbCol
           readonly property real cutTop: root.cropOf(sid, "top")
           readonly property real cutBottom: root.cropOf(sid, "bottom")
+          readonly property real visH: Math.max(0, tbCol.implicitHeight - cutTop - cutBottom)
           Layout.fillWidth: true
-          Layout.preferredHeight: Math.max(0, tbCol.implicitHeight - cutTop - cutBottom)
+          Layout.preferredHeight: win.isSizable(sid) ? root.heightFor(sid, visH) : visH
           visible: root.sectionShown(sid) || root.editing
+          contentWidth: width
+          contentHeight: visH
+          interactive: contentHeight > height + 1
+          boundsBehavior: Flickable.StopAtBounds
           clip: true
           onYChanged: win.trimRev++
           onHeightChanged: win.trimRev++
@@ -3925,6 +3956,38 @@ Item {
             MouseArea { id: plusMouse; anchors.fill: parent; anchors.margins: -5; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: srow.changed(Math.min(srow.max, srow.value + srow.step)) } }
         }
       }
+      // Height: fit the content, fit it up to a limit, or a fixed height; the
+      // last two scroll what doesn't fit
+      component HeightRows: ColumnLayout {
+        id: hrows
+        property string sid: ""
+        property real fullH: 0          // the section's content height now
+        readonly property string mode: root.heightMode(sid)
+        Layout.fillWidth: true
+        spacing: 6
+        OptRow {
+          label: "Height"
+          options: [["auto", "fit content"], ["max", "up to"], ["fixed", "fixed"]]
+          current: hrows.mode
+          onPicked: function(v) {
+            // starting a set height: begin from what it is now
+            var px = root.setting(hrows.sid, "heightPx") || root.setting(hrows.sid, "maxH") || Math.round(hrows.fullH / 10) * 10
+            root.setHeight(hrows.sid, v, px || 200)
+          }
+        }
+        StepRow {
+          visible: hrows.mode !== "auto"
+          label: hrows.mode === "fixed" ? "Fixed height" : "Max height"
+          value: root.heightPx(hrows.sid); step: 10; min: 40; max: 1200; suffix: " px"
+          onChanged: function(v) { root.setHeight(hrows.sid, hrows.mode, v) }
+        }
+        Text {
+          visible: hrows.mode !== "auto"
+          Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
+          text: hrows.mode === "fixed" ? "Always this tall. Content that doesn't fit scrolls." : "Fits the content up to this height, then scrolls."
+          color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
+        }
+      }
       component EdHeading: Text {
         Layout.fillWidth: true
         Layout.topMargin: 6
@@ -4215,7 +4278,7 @@ Item {
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting(root.editSection, "show") !== false; onPicked: function(v) { root.setSetting(root.editSection, "show", v) } }
               OptRow { label: "Title"; options: parent.parent.onOff; current: root.setting(root.editSection, "title") === true; onPicked: function(v) { root.setSetting(root.editSection, "title", v) } }
               OptRow { label: "Fit"; options: [["squeeze", "squeeze"], ["shrink", "shrink"]]; current: root.setting(root.editSection, "fit") === "shrink" ? "shrink" : "squeeze"; onPicked: function(v) { root.setSetting(root.editSection, "fit", v) } }
-              OptRow { label: "Max height"; options: [[0, "auto"], [200, "200"], [300, "300"], [450, "450"]]; current: root.setting(root.editSection, "maxH") || 0; onPicked: function(v) { root.setSetting(root.editSection, "maxH", v) } }
+              HeightRows { sid: root.editSection; fullH: win.sectionFullH(root.editSection) }
               OptRow { label: "Folded"; options: parent.parent.onOff; current: root.setting(root.editSection, "collapsed") === true; onPicked: function(v) { root.setSetting(root.editSection, "collapsed", v) } }
               // cut blank space (or unwanted bits) off the top / bottom; also by dragging the outline's edge handles
               StepRow { label: "Trim top"; value: root.cropOf(root.editSection, "top"); step: 4; min: 0; max: 600; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, v, root.cropOf(root.editSection, "bottom")) } }
@@ -4382,6 +4445,8 @@ Item {
               Text { visible: !bottomForm.wsMode; Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "The first icon is the sidebar's own: click it for quick settings. To show a plugin's panel in the sidebar instead, add it as a section (+ add section)."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
             }
 
+            // built-in sections: height (widget sections have it in their own panel above)
+            HeightRows { visible: !root.addOpen && win.isTrimmable(root.editSection) && win.isSizable(root.editSection); sid: root.editSection; fullH: win.sectionFullH(root.editSection) }
             // built-in sections: trim (widget sections have it in their own panel above)
             StepRow { visible: !root.addOpen && win.isTrimmable(root.editSection); label: "Trim top"; value: root.cropOf(root.editSection, "top"); step: 2; min: 0; max: 400; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, v, root.cropOf(root.editSection, "bottom")) } }
             StepRow { visible: !root.addOpen && win.isTrimmable(root.editSection); label: "Trim bottom"; value: root.cropOf(root.editSection, "bottom"); step: 2; min: 0; max: 400; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, root.cropOf(root.editSection, "top"), v) } }
