@@ -4,7 +4,7 @@
 
 A rice for [Omarchy](https://omarchy.org) that replaces the top bar with one vertical panel on
 the left. The clock, system stats, workspaces, the Super+Space menu, your apps, settings,
-notifications and widgets all live in it, and the rest of the screen belongs to one app at a time.
+notifications and widgets all live in it, and the rest of the screen belongs to your apps.
 
 Requires an Omarchy install with the Lua Hyprland config (Omarchy 4+).
 
@@ -29,12 +29,20 @@ Why the left? Screens are wide, so a column costs less than a bar costs in heigh
 reads like a list, top to bottom, and the panel ends where the app's own content begins, which
 is also where you start reading.
 
-### One app at a time
+### The rest is for apps
 
-Clicking an app shows **that app, full size**. The one before it slides out to the left.
-Windows of the same app tile side by side. Every motion starts from the panel: apps slide in
-from the left, minimized apps slide back into it, and the panel itself slides away for
-fullscreen games. Tap Super for an overview of everything that's open.
+Everything beside the panel belongs to your apps. Clicking an app shows **that app, full
+size**, and the one before it slides out to the left. When you want several side by side,
+they tile: windows of the same app do it on their own, and Shift+click or drag-and-drop in
+the panel places another app next to the current one. The panel never covers an app unless
+you ask it to (auto-hide, quick settings and the overview).
+
+A **fullscreen** app or game takes the whole monitor, panel included. Tap Super and the panel
+slides back over it with the overview, then slides away again when you're done.
+
+Every motion starts from the panel: apps slide in from the left, minimized apps slide back
+into it, and the panel itself slides away for fullscreen. Tap Super for an overview of
+everything that's open.
 
 ### Ease of use
 
@@ -48,7 +56,7 @@ fullscreen games. Tap Super for an overview of everything that's open.
 
 ### Simplicity
 
-One panel, one app and one direction of motion. Sections you don't use can be hidden, and the
+One panel and one direction of motion. Sections you don't use can be hidden, and the
 panel can auto-hide to a 4 px edge. Underneath it's Omarchy, not a fork: the menu,
 notifications, Do not disturb, update checks and panels all come from Omarchy's own
 services, so updates keep working.
@@ -66,15 +74,18 @@ services, so updates keep working.
   change.
 - **Calm by default.** Nothing moves unless you act. The current app has one highlight.
 
+For colours, type, spacing, components, layout rules and motion, see the
+[design guide](docs/DESIGN.md).
+
 ## See it work
 
 | | |
 | --- | --- |
 | **Super+Space: the menu, in the panel** ![Menu demo](docs/demo-menu.gif) | **Quick settings slide over the panel** ![Quick settings demo](docs/demo-quick-settings.gif) |
 
-**One app at a time: each new app slides in from the left and the last one slides out; minimizing slides an app away behind the panel**
+**Each new app opens full size, sliding in from the left as the last one slides out; minimizing slides an app away behind the panel**
 
-![One app at a time and minimize demo](docs/demo-one-app.gif)
+![Opening and minimizing apps demo](docs/demo-one-app.gif)
 
 **Notifications appear inside the panel, at the top**
 
@@ -82,14 +93,14 @@ services, so updates keep working.
 
 ## Every screen size
 
-The layout is one column plus one app, so it scales down without changing shape. Only the
+The layout is one column plus your apps, so it scales down without changing shape. Only the
 column's width and whether it stays docked change.
 
 ![The layout from desktop to phone width](docs/responsive.gif)
 
 ### Single monitor
 
-The panel is docked on the left and the app fills the rest (see the picture at the top). Drag
+The panel is docked on the left and your apps fill the rest (see the picture at the top). Drag
 the panel's right edge to resize it. The scale is remembered per resolution, so a 4K and a
 1080p screen each keep their own size.
 
@@ -113,7 +124,7 @@ reach for it, so the app keeps the full width.
 
 ![Phone: the app, the panel as home screen, quick settings](docs/mock-phone.png)
 
-Showing one app at a time is already how phones work. At phone width the panel becomes the
+Showing one app full size is already how phones work. At phone width the panel becomes the
 home screen: the app runs full screen, and pulling the panel out from the edge gives the
 launcher, workspaces and quick settings at full width. Omarchy is a desktop, so this is a
 concept. Panel width, auto-hide and choosing sections exist today; touch gestures don't.
@@ -135,7 +146,7 @@ gh repo clone BlazeJewell/omarchy-sidebar ~/.config/omarchy/plugins/jake.sidebar
 The installer:
 
 - puts the plugin in `~/.config/omarchy/plugins/jake.sidebar`
-- loads `hypr/` (Super+Space and other bindings, one app at a time, animations)
+- loads `hypr/` (Super+Space and other bindings, full-size app opening, animations)
   with one line in `~/.config/hypr/hyprland.lua` (`hypr-link.sh`)
 - switches the bar to the sidebar (`omarchy bar use jake.sidebar`) and turns off
   Omarchy's dock
@@ -176,8 +187,8 @@ hidden icons, profiles. Display scale and refresh rate stay per machine.
 | Path | What |
 | --- | --- |
 | `Sidebar.qml` | the sidebar (Quickshell, loaded by omarchy-shell as a `bar` plugin) |
-| `hypr/` | Hyprland side (loaded by `hypr-link.sh`): `binds.lua`, `look.lua` (animations, borders, corners, grouping), `solo.lua` (one app at a time), `rules.lua` |
-| `*.sh` | helpers the sidebar runs: `minimize.sh` / `restore.sh` (slide out / back in; layout-aware), `solo.sh` (one app at a time), `fsmem.sh` (fullscreen memory), `drop.sh` / `pair.sh` (drag to place), `hbatch.sh` (sends batched commands to Hyprland without moving the pointer), `refresh.sh` (resolution & refresh rate), `gpu.sh` (finds the GPU), `update.sh` (the quick-settings Update button) |
+| `hypr/` | Hyprland side (loaded by `hypr-link.sh`): `binds.lua`, `look.lua` (animations, borders, corners, grouping), `solo.lua` (new apps open full size), `rules.lua` |
+| `*.sh` | helpers the sidebar runs: `minimize.sh` / `restore.sh` (slide out / back in; layout-aware), `solo.sh` (clears the workspace so an app comes up full size), `fsmem.sh` (fullscreen memory), `drop.sh` / `pair.sh` (drag to place), `hbatch.sh` (sends batched commands to Hyprland without moving the pointer), `refresh.sh` (resolution & refresh rate), `gpu.sh` (finds the GPU), `update.sh` (the quick-settings Update button) |
 | `notifications/` | a copy of Omarchy's notification service, changed so notifications appear inside the top of the sidebar, drawn like a panel section (installed as the `jake.notifications` plugin) |
 | `layout/` | the saved sidebar layout synced between machines |
 | `MenuModel.js` | copy of Omarchy's own menu model (`/usr/share/omarchy/shell/plugins/menu/MenuModel.js`); plugins may not contain symlinks, so re-copy it if Omarchy changes it |
