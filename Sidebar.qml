@@ -6627,28 +6627,19 @@ Item {
               color: win.qsHere ? root.faint : (gearMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent")
               // The sidebar's own icon, first among the plugins: a gear cut
               // down the middle with its left half gone (a panel's edge).
-              Item {
+              // a settings gear, as bright as the plugin icons beside it
+              Shape {
                 id: sideIcon
-                // as bright as the plugin icons beside it
                 readonly property color tint: root.foreground
-                readonly property real cx: 6          // where the cut is
                 anchors.centerIn: parent
-                width: 20; height: 20
-                Item {
-                  x: sideIcon.cx; width: parent.width - sideIcon.cx; height: parent.height
-                  clip: true
-                  Shape {
-                    x: -sideIcon.cx; width: 20; height: 20
-                    preferredRendererType: Shape.CurveRenderer
-                    ShapePath {
-                      fillColor: sideIcon.tint
-                      strokeColor: "transparent"
-                      fillRule: ShapePath.OddEvenFill
-                      PathSvg { path: root.gearPath(sideIcon.cx, 10, 8.5, 6.3, 2.8, 8) }
-                    }
-                  }
+                width: 18; height: 18
+                preferredRendererType: Shape.CurveRenderer
+                ShapePath {
+                  fillColor: sideIcon.tint
+                  strokeColor: "transparent"
+                  fillRule: ShapePath.OddEvenFill
+                  PathSvg { path: root.gearPath(9, 9, 8.5, 6.4, 2.9, 8) }
                 }
-                Rectangle { x: sideIcon.cx - 1; y: 0.5; width: 2; height: 19; radius: 1; color: sideIcon.tint }
               }
               MouseArea { id: gearMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleQuickSettings(win.monitorName) }
             }
@@ -6774,15 +6765,16 @@ Item {
         height: Math.min(settingsPanel.implicitHeight + 7, bottomY - sideFlick.y)
         y: bottomY - height
         color: win.color.a < 1 ? root.background : win.color
-        // the separator line the panel always had above it
-        Rectangle { x: sideFlick.x; width: sideFlick.width; height: 1; color: root.faint }
+        // the separator line the panel always had above it (lined up with the
+        // sections: this box already starts inside the panel's gap and border)
+        Rectangle { x: sideFlick.x - win.panelInnerX; width: sideFlick.width; height: 1; color: root.faint }
         // swallow clicks and scrolls so they don't reach the sections underneath
         MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: function(w) { w.accepted = true } }
         Flickable {
           id: qsFlick
           anchors.fill: parent
-          anchors.leftMargin: sideFlick.x
-          anchors.rightMargin: sideFlick.x
+          anchors.leftMargin: sideFlick.x - win.panelInnerX
+          anchors.rightMargin: qsOverlay.width - anchors.leftMargin - sideFlick.width
           anchors.topMargin: 7
           clip: true
           contentHeight: settingsPanel.implicitHeight
