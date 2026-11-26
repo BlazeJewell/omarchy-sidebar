@@ -1346,6 +1346,25 @@ Item {
   }
 
   // ---- quick settings -------------------------------------------------------
+  // Omarchy's Setup menu entries live in the quick settings tabs they belong to.
+  // One entry as a menu row, or null when it's missing or hidden on this machine.
+  function menuRowById(id) {
+    var e = root.menuItems[id]
+    if (!e || !root.visibleEntry(e)) return null
+    return root.menuRow(e, e.description, e.order)
+  }
+  // the label of the chosen option in a pick-one submenu (the default browser …)
+  function checkedChildLabel(id) {
+    var items = root.menuItems, order = root.menuOrder
+    for (var i = 0; i < order.length; i++) {
+      var c = items[order[i]]
+      if (c && c.parent === id && root.checkedResults[c.id]) return String(c.label || "")
+    }
+    return ""
+  }
+  // re-read what's checked and what shows (after something ran, or on opening)
+  function refreshMenuGuards() { if (root.defaultMenuSettled && root.userMenuSettled) root.evaluateGuards() }
+  Timer { id: guardsLater; interval: 2500; onTriggered: root.refreshMenuGuards() }
   property bool qsOpen: false
   property string qsMonitor: ""
   property var qsState: ({ wifi: false, night: false, idle: false, profile: "", netType: "", netName: "" })
@@ -1358,6 +1377,7 @@ Item {
     root.qsMonitor = monitorName || (Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : "")
     root.qsOpen = true
     qsPoll.running = true
+    root.refreshMenuGuards()
     displayPoll.running = true
   }
   function closeQuickSettings() { root.qsOpen = false }
@@ -1487,6 +1507,7 @@ Item {
     if (section) root.qsSection = section
     root.qsOpen = true
     qsPoll.running = true
+    root.refreshMenuGuards()
   }
 
   // Wi-Fi
@@ -3727,10 +3748,12 @@ Item {
           id: cell
           property string sid: ""
           readonly property alias col: cellCol
-          readonly property bool hasContent: cellCol.implicitHeight > 0
           readonly property real laneW: mainCol.width   // not the lane's: that would size itself from the cells
           // the app list (at "fit content") takes the room that's left
           readonly property bool fills: sid === "apps" && root.heightMode("apps") === "auto"
+          // empty cells fold away; the stretching one never does (the Super+Space menu
+          // stands in for the app list with no height of its own, only the room left)
+          readonly property bool hasContent: cellCol.implicitHeight > 0 || (fills && root.sectionShown(sid))
           readonly property bool card: root.setting(sid, "card") === true
           readonly property real pad: { var v = root.setting(sid, "pad"); return typeof v === "number" ? v : (card ? 10 : 0) }
           readonly property string valign: root.setting(sid, "align") || "top"
@@ -5616,12 +5639,8 @@ Item {
                   if (event.key === Qt.Key_Down || (event.key === Qt.Key_N && (event.modifiers & Qt.ControlModifier)) || (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier))) { root.moveSelection(1); event.accepted = true }
                   else if (event.key === Qt.Key_Up || (event.key === Qt.Key_P && (event.modifiers & Qt.ControlModifier)) || (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier))) { root.moveSelection(-1); event.accepted = true }
                   else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) { root.activateSearchRow(root.searchRows[root.selectedIndex]); event.accepted = true }
-                  else if (event.key === Qt.Key_Escape) {
-                    if (text) text = ""
-                    else if (root.activeMenu !== "root") root.menuBack()
-                    else root.exitSearch()
-                    event.accepted = true
-                  } else if (event.key === Qt.Key_Backspace && text === "" && root.activeMenu !== "root") { root.menuBack(); event.accepted = true }
+                  // Esc leaves the search at once (Backspace on an empty field / ← go back a level)
+                  else if (event.key === Qt.Key_Escape) { root.exitSearch(); event.accepted = true } else if (event.key === Qt.Key_Backspace && text === "" && root.activeMenu !== "root") { root.menuBack(); event.accepted = true }
                   else if (event.key === Qt.Key_Right && text === "") {
                     var r = root.searchRows[root.selectedIndex]
                     if (r && (r.kind === "menu" || r.kind === "link" || r.provider === "apps")) { root.activateSearchRow(r); event.accepted = true }
@@ -6444,6 +6463,46 @@ Item {
           Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: lk.label + " ›"; color: lkMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
           MouseArea { id: lkMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: lk.activated() }
         }
+        // a row that opens an Omarchy menu entry: a submenu in the sidebar (›) or its action (↗)
+        component MenuLinkRow: Rectangle {
+          id: ml
+          property string itemId: ""     // an Omarchy menu id, e.g. "setup.monitors"
+          property string text: ""       // overrides the menu's label
+          property string hint: ""       // shown dim on the right (e.g. the current choice)
+          readonly property var row: root.menuRowById(itemId) || ({})
+          readonly property bool sub: row.kind === "menu" || row.kind === "link" || (row.childCount || 0) > 0 || !!row.provider
+          visible: row.itemId !== undefined
+          Layout.fillWidth: true
+          implicitHeight: 26
+          radius: 5
+          color: mlMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent"
+          opacity: row.disabled ? 0.4 : 1
+          RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: 6
+            anchors.rightMargin: 6
+            spacing: 10
+            Text { Layout.preferredWidth: 16; horizontalAlignment: Text.AlignHCenter; textFormat: Text.PlainText; text: ml.row.icon || ""; color: root.dim; font.family: root.fontFamily; font.pixelSize: 12 }
+            Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: ml.text || ml.row.label || ""; color: mlMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 11; elide: Text.ElideRight }
+            Text { visible: ml.hint !== ""; textFormat: Text.PlainText; text: ml.hint; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; elide: Text.ElideRight; Layout.maximumWidth: 110 }
+            Text { textFormat: Text.PlainText; text: ml.sub ? "›" : "↗"; color: root.dim; font.family: root.fontFamily; font.pixelSize: ml.sub ? 12 : 10 }
+          }
+          MouseArea {
+            id: mlMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              // hold on to everything first: closing quick settings destroys this row
+              var r = root, row = ml.row, sub = ml.sub, mon = win.monitorName
+              if (row.disabled) return
+              r.closeQuickSettings()
+              // a submenu opens in the sidebar's menu; an action just runs
+              if (sub) { r.enterSearch(mon); r.activateSearchRow(row) }
+              else { r.activateSearchRow(row); guardsLater.restart() }
+            }
+          }
+        }
         component SectionBody: Rectangle {
           default property alias content: bodyColumn.data
           Layout.fillWidth: true
@@ -6803,6 +6862,8 @@ Item {
                   current: root.dnsProvider
                   onPicked: function(v) { root.setDns(v) }
                 }
+                MenuLinkRow { itemId: "setup.network.dns.custom"; text: "Custom DNS"; hint: root.dnsProvider === "Custom" ? "in use" : "" }
+                MenuLinkRow { itemId: "setup.network.qr"; text: "Share Wi-Fi as QR code" }
               }
 
               // Bluetooth
@@ -6934,7 +6995,22 @@ Item {
                   Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: root.textPx + " px"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11 }
                 }
                 SwitchRow { label: "Night light"; on: root.qsState.night; onToggled: root.qsToggle("night") }
+                MenuLinkRow { itemId: "setup.config.hyprsunset"; text: "Night light settings" }
+                MenuLinkRow { itemId: "setup.monitors"; text: "Monitor setup" }
                 LinkRow { label: "Theme & background"; onActivated: { root.closeQuickSettings(); root.enterSearch(win.monitorName); root.openMenu("appearance") } }
+              }
+
+              // Keyboard & input (from Omarchy's Setup menu)
+              SectionHeader { sectionId: "input"; icon: "\uf11c"; label: "Keyboard & input" }
+              SectionBody {
+                visible: root.qsSection === "input"
+                MenuLinkRow { itemId: "setup.typing.keyboard"; text: "Keyboard layouts" }
+                MenuLinkRow { itemId: "setup.typing.input"; text: "Input methods" }
+                MenuLinkRow { itemId: "setup.language" }
+                Caption { text: "CONFIG" }
+                MenuLinkRow { itemId: "setup.keybindings" }
+                MenuLinkRow { itemId: "setup.input"; text: "Mouse & touchpad" }
+                MenuLinkRow { itemId: "setup.config.xcompose"; text: "Compose key (XCompose)" }
               }
 
               // Notifications
@@ -6944,11 +7020,36 @@ Item {
                 SwitchRow { label: "Do not disturb"; on: root.dnd; onToggled: root.qsToggle("dnd") }
               }
 
+              // Default apps (from Omarchy's Setup menu), each with what's chosen now
+              SectionHeader { sectionId: "defaults"; icon: "\uf005"; label: "Default apps"
+                status: root.checkedChildLabel("setup.default.browser") }
+              SectionBody {
+                visible: root.qsSection === "defaults"
+                Repeater {
+                  model: ["agent", "browser", "terminal", "editor", "dictation"]
+                  MenuLinkRow { required property string modelData; itemId: "setup.default." + modelData; hint: root.checkedChildLabel("setup.default." + modelData) }
+                }
+              }
+
               // Sidebar: opens Edit sidebar (plugin icons are set in the bottom row's
               // settings there, tray icons in the tray's)
               SectionHeader { sectionId: "sidebar"; icon: "\uf0db"; label: "Sidebar"; opens: true
                 status: (root.hiddenNow.length > 0 ? root.hiddenNow.length + " hidden · " : "") + "Edit"
                 onActivated: root.startEditing(win.monitorName) }
+
+              // System: plugins, security and config files (from Omarchy's Setup menu)
+              SectionHeader { sectionId: "system"; icon: "\uf085"; label: "System" }
+              SectionBody {
+                visible: root.qsSection === "system"
+                MenuLinkRow { itemId: "setup.plugin" }
+                MenuLinkRow { itemId: "setup.security" }
+                Caption { text: "CONFIG" }
+                MenuLinkRow { itemId: "setup.config.git"; text: "Git" }
+                MenuLinkRow { itemId: "setup.config.hyprland"; text: "Hyprland config" }
+                Caption { text: "STARTUP & RESET" }
+                MenuLinkRow { itemId: "setup.direct-boot" }
+                MenuLinkRow { itemId: "setup.reset" }
+              }
 
               // Power
               SectionHeader { sectionId: "power"; icon: ""; label: "Power"; status: root.profileLabel(root.qsState.profile) + (root.batteryPresent ? " · " + root.batteryPct + "%" : "") }
@@ -7018,48 +7119,12 @@ Item {
               }
             }
 
-            RowLayout {
-              Layout.fillWidth: true
-              Layout.topMargin: 6
-              spacing: 6
-              Repeater {
-                model: [
-                  { label: "All settings", icon: "\uf013" }
-                ]
-                Rectangle {
-                  id: qsBtn
-                  required property var modelData
-                  required property int index
-                  Layout.fillWidth: true
-                  Layout.preferredWidth: 1
-                  implicitHeight: 28
-                  radius: 6
-                  color: qsBtnMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
-                                                  : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
-                  Row {
-                    anchors.centerIn: parent
-                    spacing: 6
-                    Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: qsBtn.modelData.icon; color: root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
-                    Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: qsBtn.modelData.label; color: qsBtnMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
-                  }
-                  MouseArea {
-                    id: qsBtnMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                      root.closeQuickSettings(); root.enterSearch(win.monitorName); root.openMenu("setup")
-                    }
-                  }
-                }
-              }
-            }
-
             Rectangle {
               id: updBtn
               readonly property bool ready: Number(root.updateCount) > 0 && !root.updating
               readonly property bool busy: root.updating || root.updateCount === ""
               Layout.fillWidth: true
+              Layout.topMargin: 6
               implicitHeight: 28
               radius: 6
               color: updBtn.ready ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, updMouse.containsMouse ? 0.3 : 0.18)

@@ -240,9 +240,11 @@ background* opens the menu).
  │ APPS                              │
  │ Nothing is playing                │     ← empty state, Small/dim
  └───────────────────────────────────┘     ← SectionBody (0.05, r8, pad 10)
+ ⌨  Keyboard & input                 ›     ← Omarchy's Setup entries, each in
+ ★  Default apps              Firefox  ›        the tab it belongs to (links:
+ ⚙  System                           ›        › submenu, ↗ opens/runs)
  ⌂  Power                Performance  ›
- [          All settings         ]         ← footer button (28)
- [        ✓ Rice up to date        ]
+ [        ✓ Rice up to date        ]         ← footer button (28)
 ```
 
 Order inside a body: **master switch → status line → captioned groups → link**.
@@ -289,9 +291,8 @@ highlight that competes with it.
 
 ### Buttons
 
-- **Footer buttons** (*All settings*, *Update*): 28 high, r6,
-  0.05 rest, 0.12 hover, small icon + Small label, centred, and equal width
-  when side by side.
+- **Footer button** (*Update*): 28 high, r6,
+  0.05 rest, 0.12 hover, small icon + Small label, centred, full width.
 - **Icon buttons** (power actions): 40 high, glyph 13 over a Micro label, no
   outline, 0.12 hover.
 - **Destructive actions** ("forget"): dim text that turns `urgent` on hover,
