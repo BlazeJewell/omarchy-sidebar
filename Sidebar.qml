@@ -15,6 +15,7 @@ import QtQuick.Shapes
 import qs.Commons
 import qs.Commons as Commons
 import "MenuModel.js" as MenuModel
+import "DisplayModel.js" as DisplayModel
 
 // A wide sidebar on the left edge that replaces the Omarchy bar:
 // clock, system stats, workspaces, launcher, open windows, tray, and the
@@ -1376,6 +1377,7 @@ Item {
     root.closeTrayMenu()
     root.qsMonitor = monitorName || (Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : "")
     root.qsOpen = true
+    root.selDisplay = root.qsMonitor
     qsPoll.running = true
     root.refreshMenuGuards()
     displayPoll.running = true
@@ -1443,6 +1445,128 @@ Item {
   // Settings section (in the sidebar, above the gear)
   property string qsSection: ""
   function toggleSection(id) { root.qsSection = root.qsSection === id ? "" : id }
+  // an expanded row inside a section (a default-apps category, Security, Plugins …)
+  property string qsSub: ""
+  onQsSectionChanged: { qsSub = ""; qsTyping = "" }
+  // a text field in quick settings that wants the keyboard ("" = none)
+  property string qsTyping: ""
+
+  // ---- Omarchy menu entries edited right in quick settings ----
+  // the visible children of a menu entry, in menu order
+  function menuChildren(id) {
+    var items = root.menuItems, order = root.menuOrder, out = []
+    for (var i = 0; i < order.length; i++) {
+      var e = items[order[i]]
+      if (!e || e.parent !== id || !root.visibleEntry(e)) continue
+      out.push({ id: e.id, label: String(e.label || ""), action: String(e.action || ""),
+                 checkable: e.checked !== undefined && e.checked !== "" && e.checked !== null,
+                 checked: !!root.checkedResults[e.id], disabled: root.disabledEntry(e),
+                 hasKids: MenuModel.childCount(items, order, e.id) > 0 || !!e.provider })
+    }
+    return out
+  }
+  // a pick (default browser …) runs here and quick settings stays open; anything
+  // that opens a window (a setup wizard, an editor) closes it first
+  function runMenuEntry(c) {
+    if (!c || c.disabled) return
+    if (c.hasKids) {
+      var row = root.menuRowById(c.id), mon = root.qsMonitor
+      root.closeQuickSettings(); root.enterSearch(mon); root.activateSearchRow(row); return
+    }
+    if (!c.action) return
+    if (c.checkable) {
+      var chk = Object.assign({}, root.checkedResults), e = root.menuItems[c.id]
+      root.menuChildren(e ? e.parent : "").forEach(function(s) { chk[s.id] = false })
+      chk[c.id] = true
+      root.checkedResults = chk          // show the pick at once
+      Quickshell.execDetached(["bash", "-lc", c.action])
+      guardsLater.restart()
+      return
+    }
+    root.closeQuickSettings()
+    Quickshell.execDetached(["bash", "-lc", c.action])
+    guardsLater.restart()
+  }
+
+  // ---- Keyboard & mouse (input.sh) ----
+  readonly property string inputScript: Qt.resolvedUrl("input.sh").toString().replace("file://", "")
+  property var inputState: ({})
+  property var inputPending: ({})
+  function inputVal(k, dflt) { var v = root.inputState[k]; return v === undefined || v === null ? dflt : v }
+  function setInput(k, v) {
+    var st = Object.assign({}, root.inputState); st[k] = v; root.inputState = st
+    var p = Object.assign({}, root.inputPending); p[k] = String(v); root.inputPending = p
+    inputApply.restart()
+  }
+  Timer {
+    id: inputApply
+    interval: 300
+    onTriggered: {
+      if (inputSetProc.running) { restart(); return }
+      var args = ["bash", "-c", 's=$1; shift; while (($#)); do bash "$s" set "$1" "$2"; shift 2; done', "sh", root.inputScript]
+      var p = root.inputPending, n = 0
+      for (var k in p) { args.push(k, p[k]); n++ }
+      root.inputPending = ({})
+      if (!n) return
+      inputSetProc.command = args
+      inputSetProc.running = true
+    }
+  }
+  Process { id: inputSetProc; onExited: inputPoll.running = true }
+  function resetInput() { Quickshell.execDetached(["bash", "-c", 'bash "$1" reset', "sh", root.inputScript]); inputPollLater.restart() }
+  Timer { id: inputPollLater; interval: 900; onTriggered: inputPoll.running = true }
+  Process {
+    id: inputPoll
+    command: ["bash", root.inputScript, "get"]
+    stdout: StdioCollector {
+      onStreamFinished: { try { var v = JSON.parse(String(text)); if (v && typeof v === "object" && !inputSetProc.running && !inputApply.running) root.inputState = v } catch (e) {} }
+    }
+  }
+
+  // ---- System › Plugins (omarchy plugin list) ----
+  property var pluginList: []
+  property bool pluginBusy: false
+  readonly property var pluginsShown: root.pluginList.filter(function(p) { return (p.kinds || []).indexOf("bar") < 0 })   // not the bar itself (that's this sidebar)
+  Process {
+    id: pluginPoll
+    command: ["omarchy", "plugin", "list", "--json"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          var v = JSON.parse(String(text))
+          if (Array.isArray(v)) root.pluginList = v.sort(function(a, b) { return (b.enabled - a.enabled) || String(a.name).localeCompare(String(b.name)) })
+        } catch (e) {}
+        root.pluginBusy = false
+      }
+    }
+  }
+  function setPluginEnabled(p, on) {
+    if (!on && !p.canDisable) return
+    var l = root.pluginList.map(function(x) { return x.id === p.id ? Object.assign({}, x, { enabled: on }) : x })
+    root.pluginList = l
+    root.pluginBusy = true
+    Quickshell.execDetached(["omarchy", "plugin", on ? "enable" : "disable", p.id])
+    pluginPollLater.restart()
+  }
+  Timer { id: pluginPollLater; interval: 1500; onTriggered: pluginPoll.running = true }
+
+  // ---- System › Git ----
+  property string gitName: ""
+  property string gitEmail: ""
+  Process {
+    id: gitPoll
+    command: ["bash", "-c", "git config --global user.name; echo; git config --global user.email"]
+    stdout: StdioCollector {
+      onStreamFinished: { var l = String(text).split("\n"); root.gitName = (l[0] || "").trim(); root.gitEmail = (l[2] || l[1] || "").trim() }
+    }
+  }
+  function setGit(field, value) {
+    value = String(value).trim()
+    root.qsTyping = ""
+    if (!value) return
+    if (field === "name") root.gitName = value; else root.gitEmail = value
+    Quickshell.execDetached(["omarchy-setup-git", field === "name" ? "--name" : "--email", value])
+  }
   readonly property var btAdapter: Bluetooth.defaultAdapter
   readonly property var btDevices: {
     var all = Bluetooth.devices ? Bluetooth.devices.values : []
@@ -1488,7 +1612,7 @@ Item {
   function closeTrayMenu() { root.trayMenuSub = null; root.trayMenuItem = null }
 
   // ---- settings sections: everything is edited right in the open section ----
-  onQsOpenChanged: if (!qsOpen) { qsSection = ""; pwSsid = "" } else checkForUpdates(false)
+  onQsOpenChanged: if (!qsOpen) { qsSection = ""; pwSsid = ""; qsTyping = ""; displayDraft = ({}) } else checkForUpdates(false)
   readonly property string qsLive: qsOpen ? qsSection : ""
   onQsLiveChanged: {
     pwSsid = ""
@@ -1496,6 +1620,9 @@ Item {
     if (root.btAdapter) root.btAdapter.discovering = qsLive === "bluetooth"
     if (qsLive === "network") dnsProc.running = true
     if (qsLive === "display") displayPoll.running = true
+    if (qsLive === "input") inputPoll.running = true
+    if (qsLive === "system") { pluginPoll.running = true; gitPoll.running = true }
+    if (qsLive === "defaults") root.refreshMenuGuards()
   }
   // Open settings at a section (keybinds); the same section again closes it.
   function openSettings(section) {
@@ -1504,6 +1631,7 @@ Item {
     root.exitSearch()
     root.closeTrayMenu()
     root.qsMonitor = Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : ""
+    root.selDisplay = root.qsMonitor
     if (section) root.qsSection = section
     root.qsOpen = true
     qsPoll.running = true
@@ -1566,11 +1694,8 @@ Item {
     var all = Pipewire.nodes ? Pipewire.nodes.values : []
     return all.filter(function(n) { return !n.isSink && !n.isStream && n.audio && String(n.name).indexOf(".monitor") < 0 })
   }
-  readonly property var streamNodes: {
-    var all = Pipewire.nodes ? Pipewire.nodes.values : []
-    return all.filter(function(n) { return n.isStream && n.audio && n.properties && n.properties["media.class"] === "Stream/Output/Audio" })
-  }
-  PwObjectTracker { objects: root.sourceNodes.concat(root.streamNodes) }
+
+  PwObjectTracker { objects: root.sourceNodes }
   function setSource(n) {
     if (!n) return
     if (n.audio) Pipewire.preferredDefaultAudioSource = n
@@ -1605,9 +1730,15 @@ Item {
     return out
   }
   function setResolution(res) {
-    root.modeRes = res
-    Quickshell.execDetached(["bash", root.refreshScript, "set", res, "best"])
-    displayRepoll.restart()
+    var m = root.selMon
+    if (!m) return
+    var rates = (m.ratesByRes || {})[res] || []
+    // keep the refresh rate if the new resolution has it, else its fastest
+    var keep = rates.filter(function(r) { return Math.abs(Number(r) - Number(m.hz)) < 0.01 })[0]
+    // and the scale, rounded up to one this resolution accepts
+    var p = res.split("x")
+    root.editDisplay(m.name, { res: res, rate: keep || rates[0] || m.hz, scale: DisplayModel.cleanScale(m.scale, res) })
+    root.reseatDraft(m.name)
   }
   // A dual-mode monitor switching modes reconnects with a new mode list:
   // re-read it whenever Hyprland reports monitors coming or going.
@@ -1619,7 +1750,140 @@ Item {
       if (n === "configreloaded") { themeProc.running = true; animProc.running = true; wallProc.running = true }
     }
   }
-  readonly property string refreshScript: Qt.resolvedUrl("refresh.sh").toString().replace("file://", "")
+  readonly property string displayScript: Qt.resolvedUrl("display.sh").toString().replace("file://", "")
+
+  // ---- displays: every connected monitor; the controls act on the selected one ----
+  property var displaysLive: []      // from display.sh state
+  property string selDisplay: ""     // picked in the list (defaults to the panel's monitor)
+  // Edits wait here until Apply: { name: { res, rate, scale, transform, disabled, x, y } }
+  property var displayDraft: ({})
+  // the displays as they'll be after Apply (live + draft)
+  readonly property var displays: root.displaysLive.map(function(m) {
+    var e = root.displayDraft[m.name]
+    if (!e) return m
+    var c = Object.assign({}, m)
+    if (e.res !== undefined) { var p = e.res.split("x"); c.w = Number(p[0]); c.h = Number(p[1]); c.rates = (m.ratesByRes || {})[e.res] || [] }
+    if (e.rate !== undefined) c.hz = Number(e.rate)
+    if (e.scale !== undefined) c.scale = Number(e.scale)
+    if (e.transform !== undefined) c.transform = Number(e.transform)
+    if (e.disabled !== undefined) c.disabled = e.disabled
+    if (e.x !== undefined) { c.x = e.x; c.y = e.y }
+    c.mode = c.w + "x" + c.h + "@" + c.hz
+    return c
+  })
+  readonly property bool displayPending: {
+    for (var i = 0; i < root.displays.length; i++) if (root.displayDirty(root.displays[i], root.displaysLive[i])) return true
+    return false
+  }
+  function displayDirty(a, b) {
+    if (!a || !b) return false
+    if (a.disabled !== b.disabled) return true
+    if (a.disabled) return false
+    return a.w !== b.w || a.h !== b.h || Math.abs(Number(a.hz) - Number(b.hz)) > 0.01 || Number(a.scale) !== Number(b.scale)
+        || Number(a.transform) !== Number(b.transform) || Math.round(a.x) !== Math.round(b.x) || Math.round(a.y) !== Math.round(b.y)
+  }
+  function editDisplay(name, change) {
+    var d = Object.assign({}, root.displayDraft)
+    d[name] = Object.assign({}, d[name] || {}, change)
+    root.displayDraft = d
+    root.applySelectedDisplay()
+  }
+  // a size change (resolution, scale, rotation, on/off) can make displays overlap: re-seat in the draft
+  function reseatDraft(name) {
+    if (root.enabledDisplays.length < 2) return
+    var list = DisplayModel.clone(root.displays), idx = -1
+    for (var i = 0; i < list.length; i++) if (list[i].name === name) idx = i
+    if (idx < 0) return
+    root.draftPositions(list[idx].disabled ? DisplayModel.tidy(list) : DisplayModel.reseat(list, idx))
+  }
+  function draftPositions(list) {
+    var d = Object.assign({}, root.displayDraft)
+    list.forEach(function(m) { if (!m.disabled) d[m.name] = Object.assign({}, d[m.name] || {}, { x: Math.round(m.x), y: Math.round(m.y) }) })
+    root.displayDraft = d
+  }
+  function discardDisplayChanges() { root.displayDraft = ({}); root.applySelectedDisplay() }
+  function applyDisplayChanges() {
+    if (!root.displayPending) return
+    var out = root.displays.map(function(m) {
+      if (m.disabled) return { name: m.name, disabled: true }
+      var rate = ""
+      for (var i = 0; i < (m.rates || []).length; i++) if (Math.abs(Number(m.rates[i]) - Number(m.hz)) < 0.01) rate = m.rates[i]
+      return { name: m.name, disabled: false, res: m.w + "x" + m.h, rate: rate || "best", scale: Number(m.scale), transform: Number(m.transform), x: Math.round(m.x), y: Math.round(m.y) }
+    })
+    // remember the chosen scale for the chosen resolution, so the poll doesn't swap it back
+    root.displays.forEach(function(m, i) { if (!m.disabled && root.displayDirty(m, root.displaysLive[i])) root.saveScaleFor(m.name, m.w + "x" + m.h, String(Number(m.scale))) })
+    root.displaysLive = root.displays   // show it as applied straight away
+    root.displayDraft = ({})
+    // display.sh puts the old settings back after 15 s unless Keep is pressed (works even if this panel is gone)
+    Quickshell.execDetached(["bash", root.displayScript, "apply", JSON.stringify(out), "--confirm"])
+    root.displayCountdown = 15
+    displayRepoll.restart()
+  }
+  // ---- Keep / Revert after Apply ----
+  property int displayCountdown: 0
+  Timer {
+    interval: 1000; repeat: true; running: root.displayCountdown > 0
+    onTriggered: { root.displayCountdown--; if (root.displayCountdown === 0) displayRevertRepoll.restart() }
+  }
+  // the watchdog has reverted by now: read the monitors again
+  Timer { id: displayRevertRepoll; interval: 2500; onTriggered: displayPoll.running = true }
+  function keepDisplayChanges() {
+    root.displayCountdown = 0
+    Quickshell.execDetached(["bash", root.displayScript, "keep"])
+  }
+  function revertDisplayChanges() {
+    root.displayCountdown = 0
+    root.displayDraft = ({})
+    Quickshell.execDetached(["bash", root.displayScript, "revert"])
+    displayRevertRepoll.restart()
+  }
+  readonly property var selMon: {
+    var d = root.displays, f = null
+    for (var i = 0; i < d.length; i++) { if (d[i].name === root.selDisplay) return d[i]; if (d[i].focused) f = d[i] }
+    return f || (d.length ? d[0] : null)
+  }
+  readonly property string selName: selMon ? selMon.name : ""
+  readonly property var enabledDisplays: root.displays.filter(function(m) { return !m.disabled })
+  onSelNameChanged: { root.applySelectedDisplay(); root.brightness = -1; brightnessPoll.running = true }
+  function applySelectedDisplay() {
+    var m = root.selMon
+    if (!m) return
+    root.modeSize = m.w + "×" + m.h
+    root.modeRes = m.w + "x" + m.h
+    root.refreshRate = Number(m.hz) || 0
+    root.refreshRates = m.rates || []
+    root.resolutions = m.resolutions || []
+    root.displayScale = String(Number(m.scale))
+    root.displayTransform = String(m.transform || 0)
+  }
+  property string displayTransform: "0"
+  function displaySummary(m) {
+    if (m.disabled) return "Off"
+    if (m.mirrorOf && m.mirrorOf !== "none") return "Mirrors " + m.mirrorOf
+    return root.resLabel(m.w + "x" + m.h) + " · " + Math.round(m.hz) + " Hz · " + Number(m.scale) + "×"
+  }
+  // drop display `name` at logical (x, y): snap it edge to edge with the others
+  function moveDisplay(name, x, y) {
+    var list = DisplayModel.clone(root.displays)
+    for (var i = 0; i < list.length; i++) if (list[i].name === name) { root.draftPositions(DisplayModel.moveTo(list, i, x, y)); return }
+  }
+  function setDisplayEnabled(name, on) {
+    if (!on && root.enabledDisplays.length < 2) return
+    root.editDisplay(name, { disabled: !on })
+    root.reseatDraft(name)
+  }
+  function setTransform(t) {
+    root.displayTransform = t
+    root.editDisplay(root.selName, { transform: Number(t) })
+    root.reseatDraft(root.selName)
+  }
+  Process {
+    id: brightnessPoll
+    command: ["bash", root.displayScript, "brightness", root.selName]
+    stdout: StdioCollector {
+      onStreamFinished: { var b = parseInt(String(text).trim()); root.brightness = isNaN(b) ? -1 : b }
+    }
+  }
   // Whole-number rates, plus the current one if it's fractional (119.88, 59.94).
   readonly property var refreshOptions: {
     var cur = root.refreshRate
@@ -1635,24 +1899,21 @@ Item {
   Timer { id: displayRepoll; interval: 1200; onTriggered: displayPoll.running = true }
   function setRefresh(r) {
     root.refreshRate = Number(r)
-    Quickshell.execDetached(["bash", root.refreshScript, "set", root.modeRes, String(r)])
-    displayRepoll.restart()
+    root.editDisplay(root.selName, { rate: r })
   }
   Process {
     id: displayPoll
-    command: ["bash", "-c", "omarchy-monitor-state 2>/dev/null | head -1; echo scale $(omarchy-hyprland-monitor-scaling 2>/dev/null); omarchy-display-text-size 2>/dev/null | awk '/^Text size/ {print \"text\", $3}'; bash \"$1\" status", "sh", root.refreshScript]
+    command: ["bash", "-c", "bash \"$1\" state; omarchy-display-text-size 2>/dev/null | awk '/^Text size/ {print \"text\", $3}'", "sh", root.displayScript]
     stdout: StdioCollector {
       onStreamFinished: {
         var lines = String(text).split("\n")
-        var b = parseInt(lines[0]); root.brightness = isNaN(b) ? -1 : b
+        try { var d = JSON.parse(lines[0]); if (Array.isArray(d)) root.displaysLive = d } catch (e) {}
         lines.forEach(function(l) {
           var f = l.trim().split(/\s+/)
-          if (f[0] === "scale") root.displayScale = f[1] || ""
-          else if (f[0] === "text") root.textPx = parseInt(f[1]) || 12
-          else if (f[0] === "mode") { root.modeSize = f[1] + "×" + f[2]; root.modeRes = f[1] + "x" + f[2]; root.refreshRate = Number(f[3]) || 0 }
-          else if (f[0] === "rates") root.refreshRates = f.slice(1).filter(function(r) { return r })
-          else if (f[0] === "resolutions") root.resolutions = f.slice(1).filter(function(r) { return r })
+          if (f[0] === "text") root.textPx = parseInt(f[1]) || 12
         })
+        root.applySelectedDisplay()
+        brightnessPoll.running = true
         root.rememberOrRestoreScale()
       }
     }
@@ -1661,15 +1922,14 @@ Item {
     id: brightnessApply
     interval: 150
     onTriggered: {
-      var mon = Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : ""
-      Quickshell.execDetached(["omarchy-brightness-display", "--no-osd", "--monitor", mon, root.brightness + "%"])
+      Quickshell.execDetached(["omarchy-brightness-display", "--no-osd", "--monitor", root.selName, root.brightness + "%"])
     }
   }
   function setBrightness(v) { root.brightness = Math.round(v * 100); brightnessApply.restart() }
   function setScale(sc) {
     root.displayScale = sc
-    root.saveScaleFor(root.modeRes, sc)
-    Quickshell.execDetached(["bash", "-lc", "omarchy-hyprland-monitor-scaling " + sc])
+    root.editDisplay(root.selName, { scale: DisplayModel.cleanScale(Number(sc), root.modeRes) })
+    root.reseatDraft(root.selName)
   }
 
   // ---- scale remembered per monitor + resolution ----------------------------
@@ -1692,31 +1952,34 @@ Item {
   function writeDisplayState() {
     Quickshell.execDetached(["bash", "-c", "printf '%s\\n' \"$1\" > \"$2\"", "sh", JSON.stringify(root.displayState), root.displayStatePath])
   }
-  function monName() { return Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : "" }
-  function saveScaleFor(res, sc) {
-    if (!res || !sc) return
+  function saveScaleFor(mon, res, sc) {
+    if (!mon || !res || !sc) return
     var st = { lastMode: Object.assign({}, root.displayState.lastMode), scales: Object.assign({}, root.displayState.scales) }
-    st.scales[root.monName() + ":" + res] = String(sc)
-    st.lastMode[root.monName()] = res
+    st.scales[mon + ":" + res] = String(sc)
+    st.lastMode[mon] = res
     root.displayState = st
     root.writeDisplayState()
   }
   function rememberOrRestoreScale() {
-    if (!root.displayStateLoaded || !root.modeRes || !root.displayScale) return
-    var mon = root.monName()
-    var key = mon + ":" + root.modeRes
+    if (!root.displayStateLoaded || !root.displaysLive.length) return
     var st = { lastMode: Object.assign({}, root.displayState.lastMode), scales: Object.assign({}, root.displayState.scales) }
-    var saved = st.scales[key]
-    var changedMode = st.lastMode[mon] !== undefined && st.lastMode[mon] !== root.modeRes
-    st.lastMode[mon] = root.modeRes
-    if (changedMode && saved && Number(saved) !== Number(root.displayScale)) {
-      // New mode: put its remembered scale back.
-      root.displayScale = saved
-      Quickshell.execDetached(["bash", "-lc", "omarchy-hyprland-monitor-scaling " + saved])
-    } else {
-      // Same mode: whatever scale is in use now is the one to remember for it.
-      st.scales[key] = String(root.displayScale)
-    }
+    var dirty = false
+    root.displaysLive.forEach(function(m) {
+      if (m.disabled) return
+      var mon = m.name, res = m.w + "x" + m.h, cur = String(Number(m.scale))
+      var key = mon + ":" + res, saved = st.scales[key]
+      var changedMode = st.lastMode[mon] !== undefined && st.lastMode[mon] !== res
+      if (st.lastMode[mon] !== res) { st.lastMode[mon] = res; dirty = true }
+      if (changedMode && saved && Number(saved) !== Number(cur)) {
+        // New mode: put its remembered scale back.
+        Quickshell.execDetached(["bash", root.displayScript, "scale", mon, saved])
+        if (mon === root.selName) root.displayScale = saved
+      } else if (saved !== cur) {
+        // Same mode: whatever scale is in use now is the one to remember for it.
+        st.scales[key] = cur; dirty = true
+      }
+    })
+    if (!dirty) return
     root.displayState = st
     root.writeDisplayState()
   }
@@ -2538,7 +2801,7 @@ Item {
         if (win.trayHere) root.closeTrayMenu()
       }
       WlrLayershell.layer: win.lifted ? WlrLayer.Overlay : WlrLayer.Top
-      WlrLayershell.keyboardFocus: (root.searching && root.searchMonitor === win.monitorName) || (win.qsHere && root.pwSsid !== "")
+      WlrLayershell.keyboardFocus: (root.searching && root.searchMonitor === win.monitorName) || (win.qsHere && (root.pwSsid !== "" || root.qsTyping !== ""))
                                    || (win.editHere && (root.addOpen || root.profileNaming))
         ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
       anchors { top: true; bottom: true; left: true }
@@ -6408,6 +6671,7 @@ Item {
           property string label: ""
           property real value: 0
           property bool muted: false
+          property string valueText: ""     // replaces the percentage when set
           signal moved(real v)
           signal muteClicked()
           Layout.fillWidth: true
@@ -6433,7 +6697,7 @@ Item {
                 onWheel: function(w) { sl.moved(Math.max(0, Math.min(1, sl.value + (w.angleDelta.y > 0 ? 0.05 : -0.05)))) }
               }
             }
-            Text { Layout.preferredWidth: 30; horizontalAlignment: Text.AlignRight; textFormat: Text.PlainText; text: sl.muted ? "mute" : Math.round(sl.value * 100) + "%"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+            Text { Layout.preferredWidth: sl.valueText !== "" ? 44 : 30; horizontalAlignment: Text.AlignRight; textFormat: Text.PlainText; text: sl.muted ? "mute" : sl.valueText !== "" ? sl.valueText : Math.round(sl.value * 100) + "%"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
           }
         }
         component ChoiceRow: Rectangle {
@@ -6441,6 +6705,7 @@ Item {
           property string label: ""
           property string hint: ""
           property bool selected: false
+          property bool radio: true          // false: a plain action row (no dot)
           signal chosen()
           Layout.fillWidth: true
           implicitHeight: 26
@@ -6451,7 +6716,7 @@ Item {
             anchors.leftMargin: 8
             anchors.rightMargin: 8
             spacing: 8
-            Rectangle { Layout.preferredWidth: 6; Layout.preferredHeight: 6; radius: 3; color: ch.selected ? root.foreground : "transparent"; border.width: ch.selected ? 0 : 1; border.color: root.dim }
+            Rectangle { visible: ch.radio; Layout.preferredWidth: 6; Layout.preferredHeight: 6; radius: 3; color: ch.selected ? root.foreground : "transparent"; border.width: ch.selected ? 0 : 1; border.color: root.dim }
             Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: ch.label; color: ch.selected ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 11; elide: Text.ElideRight }
             Text { visible: ch.hint !== ""; textFormat: Text.PlainText; text: ch.hint; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
           }
@@ -6503,6 +6768,104 @@ Item {
               // a submenu opens in the sidebar's menu; an action just runs
               if (sub) { r.enterSearch(mon); r.activateSearchRow(row) }
               else { r.activateSearchRow(row); guardsLater.restart() }
+            }
+          }
+        }
+        // a row that expands in place (one at a time per section, via root.qsSub)
+        component Expander: ColumnLayout {
+          id: ex
+          property string subId: ""
+          property string icon: ""
+          property string text: ""
+          property string hint: ""
+          default property alias content: exBody.data
+          readonly property bool open: root.qsSub === subId
+          Layout.fillWidth: true
+          spacing: 2
+          Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: 26
+            radius: 5
+            color: exMouse.containsMouse || ex.open ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent"
+            RowLayout {
+              anchors.fill: parent
+              anchors.leftMargin: 6
+              anchors.rightMargin: 6
+              spacing: 10
+              Text { Layout.preferredWidth: 16; horizontalAlignment: Text.AlignHCenter; textFormat: Text.PlainText; text: ex.icon; color: root.dim; font.family: root.fontFamily; font.pixelSize: 12 }
+              Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: ex.text; color: exMouse.containsMouse || ex.open ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 11; font.bold: ex.open; elide: Text.ElideRight }
+              Text { visible: ex.hint !== ""; textFormat: Text.PlainText; text: ex.hint; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; elide: Text.ElideRight; Layout.maximumWidth: 120 }
+              Text { textFormat: Text.PlainText; text: ex.open ? "˅" : "›"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 12 }
+            }
+            MouseArea { id: exMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.qsSub = ex.open ? "" : ex.subId }
+          }
+          ColumnLayout { id: exBody; visible: ex.open; Layout.fillWidth: true; Layout.leftMargin: 22; spacing: 2 }
+        }
+        // an Omarchy submenu (Browser, Security …) opened in place: picks run here
+        component InlineMenu: Expander {
+          id: imenu
+          property string itemId: ""
+          property string title: ""          // overrides the menu's label
+          readonly property var row: root.menuRowById(itemId) || ({})
+          readonly property var kids: imenu.open ? root.menuChildren(itemId) : []
+          visible: row.itemId !== undefined
+          subId: itemId
+          icon: row.icon || ""
+          text: imenu.title || row.label || ""
+          Repeater {
+            model: imenu.kids
+            ChoiceRow {
+              required property var modelData
+              radio: modelData.checkable
+              label: modelData.label
+              selected: modelData.checkable && modelData.checked
+              hint: modelData.checkable ? "" : (modelData.hasKids ? "›" : "↗")
+              opacity: modelData.disabled ? 0.4 : 1
+              onChosen: root.runMenuEntry(modelData)
+            }
+          }
+        }
+        // a one-line text field; Enter saves, Esc cancels
+        component FieldRow: RowLayout {
+          id: fr
+          property string fieldId: ""
+          property string label: ""
+          property string value: ""
+          property string placeholder: ""
+          signal saved(string text)
+          readonly property bool editing: root.qsTyping === fieldId
+          Layout.fillWidth: true
+          spacing: 8
+          Text { Layout.preferredWidth: 44; textFormat: Text.PlainText; text: fr.label; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+          Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 26
+            radius: 5
+            color: "transparent"
+            border.width: 1
+            border.color: fr.editing ? root.dim : root.faint
+            TextInput {
+              id: frInput
+              anchors.fill: parent
+              anchors.leftMargin: 8
+              anchors.rightMargin: 8
+              verticalAlignment: TextInput.AlignVCenter
+              color: root.foreground
+              font.family: root.fontFamily; font.pixelSize: 11
+              clip: true
+              readOnly: !fr.editing
+              text: fr.value
+              Keys.onReturnPressed: fr.saved(text)
+              Keys.onEnterPressed: fr.saved(text)
+              Keys.onEscapePressed: { text = fr.value; root.qsTyping = "" }
+              onActiveFocusChanged: if (!activeFocus && fr.editing) { text = fr.value; root.qsTyping = "" }
+              Text { anchors.verticalCenter: parent.verticalCenter; visible: !parent.text; text: fr.placeholder; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+            }
+            MouseArea {
+              anchors.fill: parent
+              visible: !fr.editing
+              cursorShape: Qt.IBeamCursor
+              onClicked: { root.qsTyping = fr.fieldId; Qt.callLater(function() { frInput.forceActiveFocus(); frInput.selectAll() }) }
             }
           }
         }
@@ -6925,31 +7288,104 @@ Item {
                   model: root.sourceNodes
                   ChoiceRow { required property var modelData; label: root.nodeName(modelData); selected: !!root.source && root.source.id === modelData.id; onChosen: root.setSource(modelData) }
                 }
-                Caption { text: "APPS" }
-                Text { visible: root.streamNodes.length === 0; textFormat: Text.PlainText; text: "Nothing is playing"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
-                Repeater {
-                  model: root.streamNodes
-                  ColumnLayout {
-                    required property var modelData
-                    Layout.fillWidth: true
-                    spacing: 0
-                    Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: root.streamName(modelData); color: root.foreground; font.family: root.fontFamily; font.pixelSize: 10; elide: Text.ElideRight }
-                    SliderRow {
-                      label: ""
-                      value: modelData.audio ? modelData.audio.volume : 0
-                      muted: !!modelData.audio && modelData.audio.muted
-                      onMoved: function(v) { if (modelData.audio) modelData.audio.volume = v }
-                      onMuteClicked: if (modelData.audio) modelData.audio.muted = !modelData.audio.muted
-                    }
-                  }
-                }
               }
 
               // Display
               SectionHeader { sectionId: "display"; icon: ""; label: "Display"
-              status: root.refreshRate > 0 ? root.resLabel(root.modeRes) + " · " + Math.round(root.refreshRate) + " Hz" : (root.qsState.night ? "Night on" : "Night off") }
+              status: root.displayCountdown > 0 ? "Keep? " + root.displayCountdown + " s" : root.displayPending ? "Not applied" : root.enabledDisplays.length > 1 ? root.enabledDisplays.length + " displays" : root.refreshRate > 0 ? root.resLabel(root.modeRes) + " · " + Math.round(root.refreshRate) + " Hz" : (root.qsState.night ? "Night on" : "Night off") }
               SectionBody {
                 visible: root.qsSection === "display"
+                // every connected display; the settings below act on the selected one
+                Caption { text: "DISPLAYS" }
+                Repeater {
+                  model: root.displays
+                  Rectangle {
+                    id: dRow
+                    required property var modelData
+                    readonly property bool sel: modelData.name === root.selName
+                    readonly property bool lastOn: !modelData.disabled && root.enabledDisplays.length < 2
+                    Layout.fillWidth: true
+                    implicitHeight: 38
+                    radius: 5
+                    color: sel ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12) : (dMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent")
+                    MouseArea { id: dMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.selDisplay = dRow.modelData.name }
+                    RowLayout {
+                      anchors.fill: parent
+                      anchors.leftMargin: 8
+                      anchors.rightMargin: 8
+                      spacing: 8
+                      Text { textFormat: Text.PlainText; text: dRow.modelData.internal ? "\uf109" : "\uf108"; color: dRow.sel ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 12 }
+                      ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 1
+                        Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: dRow.modelData.label; color: dRow.sel ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 11; font.bold: dRow.sel; elide: Text.ElideRight }
+                        Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: dRow.modelData.name + " · " + root.displaySummary(dRow.modelData) + (dRow.modelData.focused ? " · focused" : ""); color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; elide: Text.ElideRight }
+                      }
+                      // on/off (the last display that's on can't be turned off)
+                      Rectangle {
+                        visible: root.displays.length > 1
+                        opacity: dRow.lastOn ? 0.35 : 1
+                        Layout.preferredWidth: 30; Layout.preferredHeight: 16; radius: 8
+                        color: !dRow.modelData.disabled ? root.foreground : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16)
+                        Rectangle { width: 12; height: 12; radius: 6; anchors.verticalCenter: parent.verticalCenter; x: !dRow.modelData.disabled ? parent.width - width - 2 : 2
+                          color: !dRow.modelData.disabled ? root.background : root.dim }
+                        MouseArea { anchors.fill: parent; anchors.margins: -4; cursorShape: dRow.lastOn ? Qt.ArrowCursor : Qt.PointingHandCursor
+                          onClicked: if (!dRow.lastOn) root.setDisplayEnabled(dRow.modelData.name, dRow.modelData.disabled) }
+                      }
+                    }
+                  }
+                }
+                // arrangement: drag a display; it snaps edge to edge with the others
+                Caption { text: "ARRANGEMENT · DRAG TO MOVE"; visible: arrange.visible }
+                Item {
+                  id: arrange
+                  visible: root.enabledDisplays.length > 1
+                  Layout.fillWidth: true
+                  Layout.preferredHeight: 110
+                  readonly property var box: DisplayModel.bounds(root.displays)
+                  readonly property real k: Math.min((width - 16) / Math.max(1, box.w), (height - 16) / Math.max(1, box.h))
+                  readonly property real ox: (width - box.w * k) / 2
+                  readonly property real oy: (height - box.h * k) / 2
+                  Rectangle { anchors.fill: parent; radius: 6; color: "transparent"; border.width: 1; border.color: root.faint }
+                  Repeater {
+                    model: root.enabledDisplays
+                    Rectangle {
+                      id: tile
+                      required property var modelData
+                      readonly property var r: DisplayModel.rect(modelData)
+                      readonly property real homeX: arrange.ox + (r.x - arrange.box.x) * arrange.k
+                      readonly property real homeY: arrange.oy + (r.y - arrange.box.y) * arrange.k
+                      readonly property bool sel: modelData.name === root.selName
+                      x: homeX; y: homeY
+                      width: Math.max(8, r.w * arrange.k - 2); height: Math.max(8, r.h * arrange.k - 2)
+                      radius: 4
+                      color: sel ? root.foreground : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, tMouse.containsMouse ? 0.24 : 0.14)
+                      border.width: tMouse.drag.active ? 1 : 0; border.color: root.foreground
+                      z: tMouse.drag.active ? 2 : 1
+                      Text { anchors.centerIn: parent; width: parent.width - 6; horizontalAlignment: Text.AlignHCenter; elide: Text.ElideRight; textFormat: Text.PlainText
+                        text: tile.modelData.name; color: tile.sel ? root.background : root.foreground; font.family: root.fontFamily; font.pixelSize: 9 }
+                      MouseArea {
+                        id: tMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        preventStealing: true
+                        cursorShape: drag.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                        drag.target: tile
+                        drag.threshold: 3
+                        onPressed: root.selDisplay = tile.modelData.name
+                        onReleased: {
+                          if (!drag.active && Math.abs(tile.x - tile.homeX) < 1 && Math.abs(tile.y - tile.homeY) < 1) return
+                          var lx = arrange.box.x + (tile.x - arrange.ox) / arrange.k
+                          var ly = arrange.box.y + (tile.y - arrange.oy) / arrange.k
+                          var name = tile.modelData.name
+                          tile.x = Qt.binding(function() { return tile.homeX })
+                          tile.y = Qt.binding(function() { return tile.homeY })
+                          root.moveDisplay(name, lx, ly)
+                        }
+                      }
+                    }
+                  }
+                }
                 Caption { text: "BRIGHTNESS"; visible: root.brightness >= 0 }
                 SliderRow { visible: root.brightness >= 0; label: ""; value: Math.max(0, root.brightness) / 100; onMoved: function(v) { root.setBrightness(v) } }
                 Caption { text: "RESOLUTION" + (root.modeSize ? " · " + root.modeSize : ""); visible: root.resolutionOptions.length > 1 }
@@ -6971,6 +7407,53 @@ Item {
                   options: [["1", "1×"], ["1.25", "1.25×"], ["1.6", "1.6×"], ["2", "2×"]]
                   current: root.displayScale
                   onPicked: function(v) { root.setScale(v) }
+                }
+                Caption { text: "ROTATION" }
+                Segmented {
+                  options: [["0", "0°"], ["1", "90°"], ["2", "180°"], ["3", "270°"]]
+                  current: root.displayTransform
+                  onPicked: function(v) { root.setTransform(v) }
+                }
+                // display changes above wait for Apply (brightness and text size change at once)
+                RowLayout {
+                  Layout.fillWidth: true
+                  Layout.topMargin: 4
+                  spacing: 6
+                  Text { Layout.fillWidth: true; textFormat: Text.PlainText; wrapMode: Text.WordWrap
+                    text: root.displayCountdown > 0 ? "Keep these settings? Reverting in " + root.displayCountdown + " s"
+                        : root.displayPending ? "Changes not applied yet" : "No changes"
+                    color: root.displayPending || root.displayCountdown > 0 ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
+                  // after Apply: Revert / Keep
+                  Rectangle {
+                    visible: root.displayCountdown > 0
+                    Layout.preferredWidth: 64; Layout.preferredHeight: 26; radius: 5
+                    color: rvMouse.containsMouse ? root.faint : "transparent"; border.width: 1; border.color: root.faint
+                    Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: "Revert"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+                    MouseArea { id: rvMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.revertDisplayChanges() }
+                  }
+                  Rectangle {
+                    visible: root.displayCountdown > 0
+                    Layout.preferredWidth: 64; Layout.preferredHeight: 26; radius: 5
+                    color: kpMouse.containsMouse ? Qt.lighter(root.foreground, 1.15) : root.foreground
+                    Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: "Keep"; color: root.background; font.family: root.fontFamily; font.pixelSize: 10; font.bold: true }
+                    MouseArea { id: kpMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.keepDisplayChanges() }
+                  }
+                  Rectangle {
+                    visible: root.displayPending && root.displayCountdown === 0
+                    Layout.preferredWidth: 64; Layout.preferredHeight: 26; radius: 5
+                    color: dcMouse.containsMouse ? root.faint : "transparent"; border.width: 1; border.color: root.faint
+                    Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: "Discard"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+                    MouseArea { id: dcMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.discardDisplayChanges() }
+                  }
+                  Rectangle {
+                    visible: root.displayCountdown === 0
+                    Layout.preferredWidth: 64; Layout.preferredHeight: 26; radius: 5
+                    opacity: root.displayPending ? 1 : 0.35
+                    color: root.displayPending ? (apMouse.containsMouse ? Qt.lighter(root.foreground, 1.15) : root.foreground) : "transparent"
+                    border.width: root.displayPending ? 0 : 1; border.color: root.faint
+                    Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: "Apply"; color: root.displayPending ? root.background : root.dim; font.family: root.fontFamily; font.pixelSize: 10; font.bold: root.displayPending }
+                    MouseArea { id: apMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: root.displayPending ? Qt.PointingHandCursor : Qt.ArrowCursor; onClicked: root.applyDisplayChanges() }
+                  }
                 }
                 Caption { text: "TEXT SIZE" }
                 RowLayout {
@@ -6995,17 +7478,48 @@ Item {
                 LinkRow { label: "Theme & background"; onActivated: { root.closeQuickSettings(); root.enterSearch(win.monitorName); root.openMenu("appearance") } }
               }
 
-              // Keyboard & input (from Omarchy's Setup menu)
-              SectionHeader { sectionId: "input"; icon: "\uf11c"; label: "Keyboard & input" }
+              // Keyboard & mouse: settings saved by input.sh (a marked block in ~/.config/hypr/input.lua)
+              SectionHeader { sectionId: "input"; icon: "\uf11c"; label: "Keyboard & mouse" }
               SectionBody {
                 visible: root.qsSection === "input"
+                Caption { text: "KEYBOARD · REPEAT" }
+                SliderRow { label: "RATE"; value: (root.inputVal("repeat_rate", 40) - 10) / 70; valueText: root.inputVal("repeat_rate", 40) + "/s"
+                  onMoved: function(v) { root.setInput("repeat_rate", Math.round(10 + v * 70)) } }
+                SliderRow { label: "DELAY"; value: (root.inputVal("repeat_delay", 250) - 150) / 650; valueText: root.inputVal("repeat_delay", 250) + " ms"
+                  onMoved: function(v) { root.setInput("repeat_delay", Math.round((150 + v * 650) / 10) * 10) } }
+                SwitchRow { label: "Num Lock on at login"; on: root.inputVal("numlock_by_default", true) === true; onToggled: root.setInput("numlock_by_default", !(root.inputVal("numlock_by_default", true) === true)) }
                 MenuLinkRow { itemId: "setup.typing.keyboard"; text: "Keyboard layouts" }
                 MenuLinkRow { itemId: "setup.typing.input"; text: "Input methods" }
                 MenuLinkRow { itemId: "setup.language" }
+                Caption { text: "MOUSE" }
+                SliderRow { label: "SPEED"; value: (Number(root.inputVal("sensitivity", 0)) + 1) / 2
+                  valueText: (Number(root.inputVal("sensitivity", 0)) > 0 ? "+" : "") + Number(root.inputVal("sensitivity", 0)).toFixed(2)
+                  onMoved: function(v) { root.setInput("sensitivity", Math.round((v * 2 - 1) * 20) / 20) } }
+                Segmented {
+                  readonly property string acc: String(root.inputVal("accel_profile", ""))
+                  options: [["adaptive", "Acceleration"], ["flat", "Flat (raw)"]]
+                  current: acc === "flat" ? "flat" : "adaptive"
+                  onPicked: function(v) { root.setInput("accel_profile", v === "flat" ? "flat" : "default") }
+                }
+                SliderRow { label: "SCROLL"; value: (Number(root.inputVal("scroll_factor", 1)) - 0.2) / 2.8; valueText: Number(root.inputVal("scroll_factor", 1)).toFixed(1) + "×"
+                  onMoved: function(v) { root.setInput("scroll_factor", Math.round((0.2 + v * 2.8) * 10) / 10) } }
+                SwitchRow { label: "Natural scrolling"; on: root.inputVal("natural_scroll", false) === true; onToggled: root.setInput("natural_scroll", !(root.inputVal("natural_scroll", false) === true)) }
+                Caption { text: "TOUCHPAD"; visible: root.inputVal("touchpad", false) === true }
+                ColumnLayout {
+                  visible: root.inputVal("touchpad", false) === true
+                  Layout.fillWidth: true
+                  spacing: 6
+                  SwitchRow { label: "Tap to click"; on: root.inputVal("touchpad.tap_to_click", true) === true; onToggled: root.setInput("touchpad.tap_to_click", !(root.inputVal("touchpad.tap_to_click", true) === true)) }
+                  SwitchRow { label: "Natural scrolling"; on: root.inputVal("touchpad.natural_scroll", false) === true; onToggled: root.setInput("touchpad.natural_scroll", !(root.inputVal("touchpad.natural_scroll", false) === true)) }
+                  SwitchRow { label: "Off while typing"; on: root.inputVal("touchpad.disable_while_typing", true) === true; onToggled: root.setInput("touchpad.disable_while_typing", !(root.inputVal("touchpad.disable_while_typing", true) === true)) }
+                  SliderRow { label: "SCROLL"; value: (Number(root.inputVal("touchpad.scroll_factor", 0.4)) - 0.1) / 1.9; valueText: Number(root.inputVal("touchpad.scroll_factor", 0.4)).toFixed(1) + "×"
+                    onMoved: function(v) { root.setInput("touchpad.scroll_factor", Math.round((0.1 + v * 1.9) * 10) / 10) } }
+                }
                 Caption { text: "CONFIG" }
                 MenuLinkRow { itemId: "setup.keybindings" }
-                MenuLinkRow { itemId: "setup.input"; text: "Mouse & touchpad" }
+                MenuLinkRow { itemId: "setup.input"; text: "Edit input.lua" }
                 MenuLinkRow { itemId: "setup.config.xcompose"; text: "Compose key (XCompose)" }
+                LinkRow { label: Object.keys(root.inputVal("saved", {})).length ? "Reset keyboard & mouse to Omarchy defaults" : ""; visible: label !== ""; onActivated: root.resetInput() }
               }
 
               // Notifications
@@ -7022,7 +7536,7 @@ Item {
                 visible: root.qsSection === "defaults"
                 Repeater {
                   model: ["agent", "browser", "terminal", "editor", "dictation"]
-                  MenuLinkRow { required property string modelData; itemId: "setup.default." + modelData; hint: root.checkedChildLabel("setup.default." + modelData) }
+                  InlineMenu { required property string modelData; itemId: "setup.default." + modelData; hint: root.checkedChildLabel("setup.default." + modelData) }
                 }
               }
 
@@ -7036,10 +7550,50 @@ Item {
               SectionHeader { sectionId: "system"; icon: "\uf085"; label: "System" }
               SectionBody {
                 visible: root.qsSection === "system"
-                MenuLinkRow { itemId: "setup.plugin" }
-                MenuLinkRow { itemId: "setup.security" }
+                // plugins: switch them on and off here
+                Expander {
+                  subId: "plugins"
+                  icon: "\uf12e"
+                  text: "Plugins"
+                  hint: root.pluginsShown.filter(function(p) { return p.enabled }).length + " on" + (root.pluginBusy ? " · …" : "")
+                  Repeater {
+                    model: root.pluginsShown
+                    SwitchRow {
+                      required property var modelData
+                      label: String(modelData.name || modelData.id)
+                      hint: modelData.firstParty ? "" : String(modelData.id).split(".")[0]
+                      on: modelData.enabled === true
+                      opacity: modelData.enabled && !modelData.canDisable ? 0.4 : 1
+                      onToggled: root.setPluginEnabled(modelData, !modelData.enabled)
+                    }
+                  }
+                  Caption { text: "MORE" }
+                  Repeater {
+                    model: ["setup.plugin.add", "setup.plugin.clone", "setup.plugin.remove"]
+                    ChoiceRow {
+                      required property string modelData
+                      readonly property var e: root.menuItems[modelData]
+                      visible: !!e && root.visibleEntry(e)
+                      radio: false
+                      label: e ? String(e.label) + "…" : ""
+                      hint: "↗"
+                      onChosen: root.runMenuEntry({ id: modelData, action: e.action, checkable: false, hasKids: false })
+                    }
+                  }
+                }
+                InlineMenu { itemId: "setup.security" }
+                // git: name and email for commits, edited here
+                Expander {
+                  subId: "git"
+                  icon: "\uf1d3"
+                  text: "Git"
+                  hint: root.gitName
+                  FieldRow { fieldId: "git.name"; label: "Name"; value: root.gitName; placeholder: "Your name"; onSaved: function(t) { root.setGit("name", t) } }
+                  FieldRow { fieldId: "git.email"; label: "Email"; value: root.gitEmail; placeholder: "you@example.com"; onSaved: function(t) { root.setGit("email", t) } }
+                  Text { Layout.fillWidth: true; textFormat: Text.PlainText; wrapMode: Text.WordWrap; text: "Click a field, type, then Enter."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
+                  MenuLinkRow { itemId: "setup.config.git"; text: "Sign in to GitHub (full git setup)" }
+                }
                 Caption { text: "CONFIG" }
-                MenuLinkRow { itemId: "setup.config.git"; text: "Git" }
                 MenuLinkRow { itemId: "setup.config.hyprland"; text: "Hyprland config" }
                 Caption { text: "STARTUP & RESET" }
                 MenuLinkRow { itemId: "setup.direct-boot" }
