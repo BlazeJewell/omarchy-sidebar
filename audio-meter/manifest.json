@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "id": "jake.audio-meter",
+  "name": "Audio meter",
+  "version": "0.1.0",
+  "author": "jake",
+  "license": "MIT",
+  "description": "Live microphone and speaker levels as a split meter: mic in on one side, sound out on the other, with volume and mute on each.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Audio meter",
+    "description": "Mic in and sound out as a split level meter. Scroll a side to change its volume, click it to mute.",
+    "category": "Audio",
+    "aliases": [
+      "meter",
+      "vu",
+      "levels",
+      "microphone"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "orientation": "vertical",
+      "style": "segments",
+      "showNumbers": true,
+      "showDevice": true,
+      "length": 110
+    },
+    "schema": [
+      {
+        "key": "orientation",
+        "type": "enum",
+        "label": "Bars",
+        "description": "Vertical: two columns side by side, mic on the left. Horizontal: two rows, mic on top. Line: one bar split in the middle, sound out filling left and mic in filling right.",
+        "options": ["vertical", "horizontal", "line"],
+        "defaultValue": "vertical"
+      },
+      {
+        "key": "style",
+        "type": "enum",
+        "label": "Style",
+        "description": "Segments like an LED meter, or one solid fill.",
+        "options": ["segments", "solid"],
+        "defaultValue": "segments"
+      },
+      {
+        "key": "showNumbers",
+        "type": "boolean",
+        "label": "Level and volume numbers",
+        "defaultValue": true
+      },
+      {
+        "key": "showDevice",
+        "type": "boolean",
+        "label": "Device names",
+        "defaultValue": true
+      },
+      {
+        "key": "length",
+        "type": "integer",
+        "label": "Bar height (vertical)",
+        "description": "How tall the vertical bars are, in pixels.",
+        "min": 40,
+        "max": 240,
+        "step": 10,
+        "defaultValue": 110
+      }
+    ]
+  }
+}

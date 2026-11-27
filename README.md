@@ -191,6 +191,7 @@ hidden icons, profiles. Display scale and refresh rate stay per machine.
 | `hypr/` | Hyprland side (loaded by `hypr-link.sh`): `binds.lua`, `look.lua` (animations, borders, corners, grouping), `solo.lua` (new apps open full size), `rules.lua` |
 | `*.sh` | helpers the sidebar runs: `minimize.sh` / `restore.sh` (slide out / back in; layout-aware), `solo.sh` (clears the workspace so an app comes up full size), `fsmem.sh` (fullscreen memory), `drop.sh` / `pair.sh` (drag to place), `hbatch.sh` (sends batched commands to Hyprland without moving the pointer), `refresh.sh` (resolution & refresh rate), `gpu.sh` (finds the GPU), `update.sh` (the quick-settings Update button) |
 | `notifications/` | a copy of Omarchy's notification service, changed so notifications appear inside the top of the sidebar, drawn like a panel section (installed as the `jake.notifications` plugin) |
+| `audio-meter/` | mic in and sound out as a live level meter, as vertical bars, horizontal rows or one split line (linked in as the `jake.audio-meter` plugin; add it as a section in the editor). See its own README |
 | `layout/` | the saved sidebar layout synced between machines |
 | `MenuModel.js` | copy of Omarchy's own menu model (`/usr/share/omarchy/shell/plugins/menu/MenuModel.js`); plugins may not contain symlinks, so re-copy it if Omarchy changes it |
 

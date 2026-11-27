@@ -10,6 +10,8 @@ omarchy plugin enable omarchy.dock >/dev/null 2>&1 || true
 omarchy plugin disable jake.notifications >/dev/null 2>&1 || true
 omarchy plugin enable omarchy.notifications >/dev/null 2>&1 || true
 rm -f "$HOME/.config/omarchy/plugins/jake.notifications"
+omarchy plugin disable jake.audio-meter >/dev/null 2>&1 || true
+[[ -L $HOME/.config/omarchy/plugins/jake.audio-meter ]] && rm -f "$HOME/.config/omarchy/plugins/jake.audio-meter"
 rm -f "$DEST/.setup-done"   # so using the sidebar again sets it up again
 bash "$DEST/hypr-link.sh" --remove
 if [[ ${1:-} == --purge ]]; then

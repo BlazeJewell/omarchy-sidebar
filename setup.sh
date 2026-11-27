@@ -39,3 +39,11 @@ if [[ -L $link || ! -e $link ]]; then
   done
   omarchy plugin enable jake.notifications >/dev/null 2>&1 || true
 fi
+
+# the audio meter (audio-meter/) is linked in so it can be added as a section;
+# it isn't turned on here
+meter="$HOME/.config/omarchy/plugins/jake.audio-meter"
+if [[ -L $meter || ! -e $meter ]]; then
+  ln -sfn "$here/audio-meter" "$meter"
+  omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
+fi
