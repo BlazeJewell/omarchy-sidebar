@@ -16,6 +16,6 @@ local function sidebar_active()
 end
 if not sidebar_active() then return end
 
-for _, name in ipairs({ "look", "binds", "solo", "rules" }) do
+for _, name in ipairs({ "look", "binds", "solo", "rules", "installs" }) do
   dofile(dir .. name .. ".lua")
 end

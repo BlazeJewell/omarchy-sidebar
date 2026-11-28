@@ -1488,6 +1488,128 @@ Item {
     guardsLater.restart()
   }
 
+  // ---- installs: the pill beside the gear (installs.sh) ----
+  // Omarchy installs in a floating terminal in the middle of the screen. Once
+  // pacman / yay is running in it, it's tucked away (special:jake-install) and
+  // the pill shows how it's going; a password or [Y/n] question brings it back.
+  readonly property string installsScript: Qt.resolvedUrl("installs.sh").toString().replace("file://", "")
+  property var install: ({ active: false })
+  property var installLast: null        // the last running install, kept to report how it ended
+  property var installResult: null      // { ok, pkgs, address } once it's over
+  property var installHandled: ({})     // addresses already tucked away once
+  property string installKeepShown: ""
+  property bool installAskSeen: false
+  property var installSeen: ({})         // windows an install has run in
+  property int installParkedPolls: 0  // brought back by you or a question: don't tuck it away again
+  readonly property bool installTermOpen: {
+    var tl = Hyprland.toplevels.values
+    for (var i = 0; i < tl.length; i++) if (tl[i].wayland && String(tl[i].wayland.appId) === "org.omarchy.terminal") return true
+    return false
+  }
+  readonly property bool installPill: root.install.active || root.installResult !== null
+  onInstallPillChanged: if (!installPill && root.qsOpen && root.qsSection === "install") root.closeQuickSettings()
+  Timer {
+    interval: 1200; repeat: true; triggeredOnStart: true
+    running: root.installTermOpen || root.install.active
+    onTriggered: if (!installPoll.running) installPoll.running = true
+  }
+  onInstallTermOpenChanged: if (!installTermOpen && root.install.active) installPoll.running = true
+  Process {
+    id: installPoll
+    command: ["bash", root.installsScript, "status"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var v = null
+        try { v = JSON.parse(String(text)) } catch (e) { return }
+        if (!v) return
+        if (v.active) {
+          if (!root.installSeen[v.address]) { var sn = Object.assign({}, root.installSeen); sn[v.address] = true; root.installSeen = sn }
+          // tucked away already (as it opened): it counts as handled, so bringing it back sticks
+          if (v.hidden && !root.installHandled[v.address]) { var hh = Object.assign({}, root.installHandled); hh[v.address] = true; root.installHandled = hh }
+          root.installParkedPolls = 0
+          // a question has to show on two polls in a row (a short network wait looks the same for yay)
+          var asking = v.input && root.installAskSeen
+          root.installAskSeen = v.input
+          v.input = asking
+          if (asking) v.phase = "needs you"
+          else if (v.phase === "needs you") v.phase = "waiting"
+          root.installResult = null
+          root.installLast = v
+          root.install = v
+          if (v.input) {
+            // it's asking something: put the window back where it can be typed in
+            if (v.hidden) Quickshell.execDetached(["bash", root.installsScript, "show", v.address])
+            root.installKeepShown = v.address
+          } else if (!root.installHandled[v.address] && !v.hidden && root.installKeepShown !== v.address) {
+            var h = Object.assign({}, root.installHandled); h[v.address] = true; root.installHandled = h
+            Quickshell.execDetached(["bash", root.installsScript, "hide", v.address])
+          }
+        } else {
+          // tucked away as it opened (hypr/installs.lua) but nothing's installing in it:
+          // if it asks something, or nothing starts within ~4 s, it's put back on screen
+          if (v.parked && !root.installSeen[v.parked]) {
+            root.installParkedPolls++
+            if (v.parkedInput || root.installParkedPolls >= 3) {
+              root.installKeepShown = v.parked
+              root.installParkedPolls = 0
+              Quickshell.execDetached(["bash", root.installsScript, "show", v.parked])
+            }
+          } else root.installParkedPolls = 0
+          var was = root.installLast
+          root.install = v
+          if (was) {
+            root.installLast = null
+            installCheck.address = was.address
+            installCheck.pkgs = was.pkgs || []
+            installCheck.command = ["bash", root.installsScript, "check"].concat(was.pkgs || [])
+            installCheck.running = true
+          }
+        }
+      }
+    }
+  }
+  Process {
+    id: installCheck
+    property string address: ""
+    property var pkgs: []
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var ok = String(text).trim() === "ok"
+        root.installResult = { ok: ok, pkgs: installCheck.pkgs, address: installCheck.address }
+        root.installKeepShown = ""
+        if (ok) {
+          // the installer's own "Done" prompt is left in the hidden window: close it
+          Quickshell.execDetached(["bash", root.installsScript, "close", installCheck.address])
+          installClear.restart()
+        }
+      }
+    }
+  }
+  Timer { id: installClear; interval: 6000; onTriggered: if (root.installResult && root.installResult.ok) root.installResult = null }
+  function installShow() {
+    var a = root.install.active ? root.install.address : (root.installResult ? root.installResult.address : "")
+    if (!a) return
+    root.installKeepShown = a
+    root.closeQuickSettings()
+    Quickshell.execDetached(["bash", root.installsScript, "show", a])
+  }
+  function installHide() {
+    if (!root.install.active) return
+    root.installKeepShown = ""
+    Quickshell.execDetached(["bash", root.installsScript, "hide", root.install.address])
+  }
+  function installDismiss() {
+    var r = root.installResult
+    root.installResult = null
+    if (r && r.address) Quickshell.execDetached(["bash", root.installsScript, "close", r.address])
+    if (root.qsSection === "install") root.closeQuickSettings()
+  }
+  readonly property string installTitle: {
+    var p = root.install.active ? root.install.pkgs : (root.installResult ? root.installResult.pkgs : [])
+    if (!p || !p.length) return root.install.active ? (root.install.tool || "install") : "install"
+    return p[0] + (p.length > 1 ? " +" + (p.length - 1) : "")
+  }
+
   // ---- Keyboard & mouse (input.sh) ----
   readonly property string inputScript: Qt.resolvedUrl("input.sh").toString().replace("file://", "")
   property var inputState: ({})
@@ -1623,6 +1745,14 @@ Item {
     if (qsLive === "input") inputPoll.running = true
     if (qsLive === "system") { pluginPoll.running = true; gitPoll.running = true }
     if (qsLive === "defaults") root.refreshMenuGuards()
+  }
+  function openSettingsOn(section, monitorName) {
+    root.closeOverview(); root.exitSearch(); root.closeTrayMenu()
+    root.qsMonitor = monitorName || (Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : "")
+    root.selDisplay = root.qsMonitor
+    root.qsSection = section
+    root.qsOpen = true
+    qsPoll.running = true
   }
   // Open settings at a section (keybinds); the same section again closes it.
   function openSettings(section) {
@@ -6618,7 +6748,9 @@ Item {
         }
 
         // -- settings (opens above the gear) -------------------------------------
-        component SectionHeader: Rectangle {
+        // a section's row; when open it sits on the top edge of the section's dashed
+        // box (SectionBody) as its label: icon and name on the left, status on the right
+        component SectionHeader: Item {
           id: sh
           property string sectionId: ""
           property string icon: ""
@@ -6627,19 +6759,54 @@ Item {
           property bool opens: false     // clicking runs activated() instead of expanding
           signal activated()
           readonly property bool expanded: root.qsSection === sectionId
+          readonly property color chipBg: win.color.a < 1 ? root.background : win.color
           Layout.fillWidth: true
-          implicitHeight: 34
-          radius: 6
-          color: shMouse.containsMouse && !expanded ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent"
+          Layout.topMargin: expanded ? 8 : 0
+          implicitHeight: expanded ? 26 : 34
+          z: 2
+          Rectangle {
+            anchors.fill: parent
+            visible: !sh.expanded
+            radius: 6
+            color: shMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent"
+          }
           RowLayout {
+            visible: !sh.expanded
             anchors.fill: parent
             anchors.leftMargin: 6
             anchors.rightMargin: 6
             spacing: 10
             Text { Layout.preferredWidth: 16; horizontalAlignment: Text.AlignHCenter; textFormat: Text.PlainText; text: sh.icon; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 13 }
-            Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: sh.label; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 12; font.bold: sh.expanded }
+            Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: sh.label; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 12 }
             Text { textFormat: Text.PlainText; text: sh.status; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10; elide: Text.ElideRight; Layout.maximumWidth: 110 }
-            Text { textFormat: Text.PlainText; text: sh.expanded ? "˅" : "›"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 12 }
+            Text { textFormat: Text.PlainText; text: "›"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 12 }
+          }
+          // open: the label on the box's border
+          Rectangle {
+            visible: sh.expanded
+            x: 4
+            anchors.verticalCenter: parent.verticalCenter
+            width: shChip.implicitWidth + 12
+            height: 22
+            color: sh.chipBg
+            Row {
+              id: shChip
+              anchors.centerIn: parent
+              spacing: 8
+              Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: sh.icon; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 13 }
+              Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: sh.label; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 12; font.bold: true }
+              Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: "˅"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 12 }
+            }
+          }
+          Rectangle {
+            visible: sh.expanded && sh.status !== ""
+            anchors.right: parent.right
+            anchors.rightMargin: 4
+            anchors.verticalCenter: parent.verticalCenter
+            width: Math.min(shStatus.implicitWidth, 150) + 12
+            height: 16
+            color: sh.chipBg
+            Text { id: shStatus; anchors.centerIn: parent; width: Math.min(implicitWidth, 150); elide: Text.ElideRight; textFormat: Text.PlainText; text: sh.status; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
           }
           MouseArea { id: shMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: sh.opens ? sh.activated() : root.toggleSection(sh.sectionId) }
         }
@@ -6650,21 +6817,31 @@ Item {
           property bool on: false
           signal toggled()
           Layout.fillWidth: true
-          implicitHeight: 28
+          implicitHeight: 22
+          MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: sw.toggled() }
           RowLayout {
             anchors.fill: parent
             spacing: 8
             Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: sw.label; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11; elide: Text.ElideRight }
-            Text { visible: sw.hint !== ""; textFormat: Text.PlainText; text: sw.hint; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10; elide: Text.ElideRight; Layout.maximumWidth: 120 }
-            Rectangle {
-              Layout.preferredWidth: 30; Layout.preferredHeight: 16; radius: 8
-              color: sw.on ? root.foreground : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16)
-              Rectangle { width: 12; height: 12; radius: 6; anchors.verticalCenter: parent.verticalCenter; x: sw.on ? parent.width - width - 2 : 2
-                color: sw.on ? root.background : root.dim
-                Behavior on x { NumberAnimation { duration: Style.duration(120); easing.type: Easing.OutCubic } } }
+            Text { visible: sw.hint !== ""; textFormat: Text.PlainText; text: sw.hint; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; elide: Text.ElideRight; Layout.maximumWidth: 120 }
+            Row {
+              Repeater {
+                model: [[true, "on"], [false, "off"]]
+                Row {
+                  required property var modelData
+                  required property int index
+                  Text { visible: index > 0; textFormat: Text.PlainText; text: " / "; color: root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
+                  Text {
+                    readonly property bool sel: sw.on === modelData[0]
+                    textFormat: Text.PlainText; text: modelData[1]
+                    color: sel || swOpt.containsMouse ? root.foreground : root.dim
+                    font.family: root.fontFamily; font.pixelSize: 11; font.bold: sel; font.underline: sel
+                    MouseArea { id: swOpt; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: if (!parent.sel) sw.toggled() }
+                  }
+                }
+              }
             }
           }
-          MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: sw.toggled() }
         }
         component SliderRow: Item {
           id: sl
@@ -6679,7 +6856,7 @@ Item {
           RowLayout {
             anchors.fill: parent
             spacing: 8
-            Text { Layout.preferredWidth: 26; textFormat: Text.PlainText; text: sl.label; color: sl.muted ? root.urgent : root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1
+            Text { visible: sl.label !== ""; Layout.preferredWidth: 76; textFormat: Text.PlainText; text: sl.label; color: sl.muted ? root.urgent : root.foreground; font.family: root.fontFamily; font.pixelSize: 11
               MouseArea { anchors.fill: parent; anchors.margins: -4; cursorShape: Qt.PointingHandCursor; onClicked: sl.muteClicked() } }
             Item {
               id: track
@@ -6697,27 +6874,30 @@ Item {
                 onWheel: function(w) { sl.moved(Math.max(0, Math.min(1, sl.value + (w.angleDelta.y > 0 ? 0.05 : -0.05)))) }
               }
             }
-            Text { Layout.preferredWidth: sl.valueText !== "" ? 44 : 30; horizontalAlignment: Text.AlignRight; textFormat: Text.PlainText; text: sl.muted ? "mute" : sl.valueText !== "" ? sl.valueText : Math.round(sl.value * 100) + "%"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+            Text { Layout.preferredWidth: 44; horizontalAlignment: Text.AlignRight; textFormat: Text.PlainText; text: sl.muted ? "mute" : sl.valueText !== "" ? sl.valueText : Math.round(sl.value * 100) + "%"; color: sl.muted ? root.dim : root.foreground; font.family: root.fontFamily; font.pixelSize: 11; font.bold: !sl.muted }
           }
         }
+        // a pick from a list: an outlined tile, white outline for the chosen one;
+        // radio: false makes it a plain action row
         component ChoiceRow: Rectangle {
           id: ch
           property string label: ""
           property string hint: ""
           property bool selected: false
-          property bool radio: true          // false: a plain action row (no dot)
+          property bool radio: true
           signal chosen()
           Layout.fillWidth: true
-          implicitHeight: 26
-          radius: 5
-          color: selected ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12) : (chMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent")
+          implicitHeight: radio ? 30 : 24
+          radius: 6
+          color: chMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent"
+          border.width: !ch.radio ? 0 : (ch.selected ? 2 : 1)
+          border.color: ch.selected ? root.foreground : root.faint
           RowLayout {
             anchors.fill: parent
-            anchors.leftMargin: 8
-            anchors.rightMargin: 8
+            anchors.leftMargin: ch.radio ? 10 : 0
+            anchors.rightMargin: ch.radio ? 10 : 0
             spacing: 8
-            Rectangle { visible: ch.radio; Layout.preferredWidth: 6; Layout.preferredHeight: 6; radius: 3; color: ch.selected ? root.foreground : "transparent"; border.width: ch.selected ? 0 : 1; border.color: root.dim }
-            Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: ch.label; color: ch.selected ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 11; elide: Text.ElideRight }
+            Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: ch.label; color: ch.selected || (!ch.radio && chMouse.containsMouse) ? root.foreground : (ch.radio ? root.dim : root.foreground); font.family: root.fontFamily; font.pixelSize: 11; font.bold: ch.selected; elide: Text.ElideRight }
             Text { visible: ch.hint !== ""; textFormat: Text.PlainText; text: ch.hint; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
           }
           MouseArea { id: chMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: ch.chosen() }
@@ -6840,15 +7020,11 @@ Item {
           Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 26
-            radius: 5
             color: "transparent"
-            border.width: 1
-            border.color: fr.editing ? root.dim : root.faint
+            Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 1; color: fr.editing ? root.foreground : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.3) }
             TextInput {
               id: frInput
               anchors.fill: parent
-              anchors.leftMargin: 8
-              anchors.rightMargin: 8
               verticalAlignment: TextInput.AlignVCenter
               color: root.foreground
               font.family: root.fontFamily; font.pixelSize: 11
@@ -6869,13 +7045,36 @@ Item {
             }
           }
         }
-        component SectionBody: Rectangle {
+        // an open section: a dashed box; its SectionHeader sits on the top edge as the label
+        component SectionBody: Item {
+          id: sbody
           default property alias content: bodyColumn.data
           Layout.fillWidth: true
-          implicitHeight: bodyColumn.implicitHeight + 20
-          radius: 8
-          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
-          ColumnLayout { id: bodyColumn; anchors.fill: parent; anchors.margins: 10; spacing: 6 }
+          Layout.topMargin: -15          // the box's top edge runs through the header's middle (26/2 + spacing)
+          Layout.bottomMargin: 8
+          implicitHeight: bodyColumn.implicitHeight + 36
+          Canvas {
+            anchors.fill: parent
+            property color line: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.3)
+            onLineChanged: requestPaint()
+            onWidthChanged: requestPaint()
+            onHeightChanged: requestPaint()
+            onPaint: {
+              var ctx = getContext("2d")
+              ctx.reset()
+              ctx.strokeStyle = line
+              ctx.lineWidth = 1
+              ctx.setLineDash([4, 3])
+              var r = 8, w = width - 1, h = height - 1
+              ctx.beginPath()
+              ctx.moveTo(r + 0.5, 0.5); ctx.lineTo(w - r, 0.5); ctx.arcTo(w, 0.5, w, r, r)
+              ctx.lineTo(w, h - r); ctx.arcTo(w, h, w - r, h, r)
+              ctx.lineTo(r + 0.5, h); ctx.arcTo(0.5, h, 0.5, h - r, r)
+              ctx.lineTo(0.5, r); ctx.arcTo(0.5, 0.5, r + 0.5, 0.5, r)
+              ctx.stroke()
+            }
+          }
+          ColumnLayout { id: bodyColumn; anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; anchors.topMargin: 22; anchors.bottomMargin: 14; spacing: 10 }
         }
 
 
@@ -6986,19 +7185,24 @@ Item {
           RowLayout {
             anchors.fill: parent
             spacing: 6
+            // the quick settings gear, drawn like a workspace chip (white while open)
             Rectangle {
-              Layout.preferredWidth: 28
-              Layout.preferredHeight: 28
-              radius: 6
-              color: win.qsHere ? root.faint : (gearMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent")
+              Layout.preferredWidth: 24
+              Layout.preferredHeight: 24
+              Layout.leftMargin: 2
+              radius: 4
+              color: win.qsHere && root.qsSection !== "install" ? root.foreground : "transparent"
+              border.width: 1
+              border.color: win.qsHere && root.qsSection !== "install" ? root.foreground : (gearMouse.containsMouse ? root.dim : root.faint)
               // The sidebar's own icon, first among the plugins: a gear cut
               // down the middle with its left half gone (a panel's edge).
               // a settings gear, as bright as the plugin icons beside it
               Shape {
                 id: sideIcon
-                readonly property color tint: root.foreground
+                readonly property color tint: win.qsHere && root.qsSection !== "install" ? root.background : root.foreground
                 anchors.centerIn: parent
                 width: 18; height: 18
+                scale: 0.78
                 preferredRendererType: Shape.CurveRenderer
                 ShapePath {
                   fillColor: sideIcon.tint
@@ -7007,7 +7211,70 @@ Item {
                   PathSvg { path: root.gearPath(9, 9, 8.5, 6.4, 2.9, 8) }
                 }
               }
-              MouseArea { id: gearMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleQuickSettings(win.monitorName) }
+              MouseArea { id: gearMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: { if (win.qsHere && root.qsSection === "install") root.qsSection = ""; else root.toggleQuickSettings(win.monitorName) } }
+            }
+            // installing: a pill in the same chip style; it opens the install in the panel
+            Rectangle {
+              id: instPill
+              visible: root.installPill
+              readonly property bool openHere: win.qsHere && root.qsSection === "install"
+              readonly property bool asks: root.install.active && root.install.input
+              readonly property bool failed: !root.install.active && root.installResult !== null && !root.installResult.ok
+              readonly property bool filled: openHere || asks
+              Layout.preferredHeight: 24
+              Layout.preferredWidth: instRow.implicitWidth + 16
+              Layout.maximumWidth: 170
+              radius: 4
+              color: filled ? root.foreground : (instMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent")
+              border.width: 1
+              border.color: filled ? root.foreground : (failed ? root.urgent : root.dim)
+              clip: true
+              Row {
+                id: instRow
+                anchors.centerIn: parent
+                spacing: 6
+                // a turning arc while it runs; ✓ / ✕ once it's over; ● when it asks
+                Item {
+                  width: 12; height: 12
+                  anchors.verticalCenter: parent.verticalCenter
+                  visible: root.install.active && !instPill.asks
+                  Canvas {
+                    id: instArc
+                    anchors.fill: parent
+                    property color c: instPill.filled ? root.background : root.foreground
+                    onCChanged: requestPaint()
+                    onPaint: {
+                      var ctx = getContext("2d"); ctx.reset()
+                      ctx.lineWidth = 2; ctx.lineCap = "round"
+                      ctx.strokeStyle = Qt.rgba(c.r, c.g, c.b, 0.25)
+                      ctx.beginPath(); ctx.arc(6, 6, 4.5, 0, Math.PI * 2); ctx.stroke()
+                      ctx.strokeStyle = c
+                      ctx.beginPath(); ctx.arc(6, 6, 4.5, -Math.PI / 2, Math.PI * 0.75); ctx.stroke()
+                    }
+                    RotationAnimation on rotation { from: 0; to: 360; duration: 1100; loops: Animation.Infinite; running: instPill.visible && root.install.active }
+                  }
+                }
+                Text {
+                  visible: !root.install.active || instPill.asks
+                  anchors.verticalCenter: parent.verticalCenter
+                  textFormat: Text.PlainText
+                  text: instPill.asks ? "●" : (instPill.failed ? "✕" : "✓")
+                  color: instPill.filled ? root.background : (instPill.failed ? root.urgent : root.foreground)
+                  font.family: root.fontFamily; font.pixelSize: 10; font.bold: true
+                }
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: Math.min(implicitWidth, 120)
+                  elide: Text.ElideRight
+                  textFormat: Text.PlainText
+                  text: instPill.asks ? "needs you" : (instPill.failed ? "failed" : root.installTitle)
+                  color: instPill.filled ? root.background : root.foreground
+                  font.family: root.fontFamily; font.pixelSize: 10; font.bold: instPill.filled
+                }
+              }
+              MouseArea { id: instMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: instPill.openHere ? root.closeQuickSettings() : root.openSettingsOn("install", win.monitorName) }
             }
             Item { Layout.fillWidth: true }
             // right side, option 1: workspace chips (same look and settings as the
@@ -7152,8 +7419,108 @@ Item {
             spacing: 2
 
 
+            // the install, on its own: opened from the pill beside the gear
+            ColumnLayout {
+              visible: root.qsSection === "install"
+              Layout.fillWidth: true
+              spacing: 2
+              // Installing (only while something installs, or just has)
+              SectionHeader {
+                visible: root.installPill && root.qsSection === "install"
+                sectionId: "install"
+                opens: true              // its label closes the panel (nothing else shows with it)
+                onActivated: root.closeQuickSettings()
+                icon: root.install.active ? "\uf019" : (root.installResult && root.installResult.ok ? "\uf00c" : "\uf00d")
+                label: root.install.active ? (root.install.input ? "Installer needs you" : "Installing") : (root.installResult && root.installResult.ok ? "Installed" : "Install failed")
+                status: root.install.active ? root.install.phase : ""
+              }
+              SectionBody {
+                visible: root.installPill && root.qsSection === "install"
+                RowLayout {
+                  Layout.fillWidth: true
+                  Text { Layout.fillWidth: true; textFormat: Text.PlainText; elide: Text.ElideRight; text: root.installTitle; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11; font.bold: true }
+                  Text { textFormat: Text.PlainText; text: root.install.active ? root.install.tool : (root.installResult && root.installResult.ok ? "done" : "didn't install"); color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+                }
+                // a moving bar: pacman doesn't say how far along it is anywhere we can read
+                Item {
+                  visible: root.install.active && !root.install.input
+                  Layout.fillWidth: true
+                  Layout.preferredHeight: 4
+                  clip: true
+                  Rectangle { anchors.fill: parent; radius: 2; color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16) }
+                  Rectangle {
+                    id: instBar
+                    width: parent.width * 0.3; height: 4; radius: 2; color: root.foreground
+                    SequentialAnimation on x {
+                      running: root.install.active && root.qsSection === "install"
+                      loops: Animation.Infinite
+                      NumberAnimation { from: -instBar.width; to: instBar.parent.width; duration: 1400; easing.type: Easing.InOutQuad }
+                    }
+                  }
+                }
+                Text {
+                  visible: root.install.active && root.install.input
+                  Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
+                  text: "It's asking for your password or a yes / no. The installer window is back on screen: answer it there."
+                  color: root.foreground; font.family: root.fontFamily; font.pixelSize: 10
+                }
+                Caption { text: "PACKAGES"; visible: (root.install.active ? root.install.pkgs : (root.installResult ? root.installResult.pkgs : [])).length > 0 }
+                Repeater {
+                  model: root.install.active ? root.install.pkgs : (root.installResult ? root.installResult.pkgs : [])
+                  RowLayout {
+                    required property string modelData
+                    Layout.fillWidth: true
+                    Text { Layout.fillWidth: true; textFormat: Text.PlainText; elide: Text.ElideRight; text: modelData; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11 }
+                    Text { textFormat: Text.PlainText; text: root.install.active ? root.install.phase : (root.installResult && root.installResult.ok ? "✓ installed" : "✕"); color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+                  }
+                }
+                Caption { text: "PACMAN LOG"; visible: root.install.active && (root.install.log || []).length > 0 }
+                Rectangle {
+                  visible: root.install.active && (root.install.log || []).length > 0
+                  Layout.fillWidth: true
+                  implicitHeight: instLog.implicitHeight + 16
+                  radius: 6
+                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+                  Text {
+                    id: instLog
+                    x: 10; y: 8; width: parent.width - 20
+                    wrapMode: Text.WrapAnywhere; textFormat: Text.PlainText
+                    text: (root.install.log || []).join("\n")
+                    color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; lineHeight: 1.3
+                  }
+                }
+                RowLayout {
+                  Layout.fillWidth: true
+                  spacing: 6
+                  Item { Layout.fillWidth: true }
+                  Repeater {
+                    model: root.install.active
+                      ? [[root.install.hidden ? "Show terminal ↗" : "Hide terminal", "toggle"]]
+                      : (root.installResult && !root.installResult.ok ? (root.installTermOpen ? [["Dismiss", "dismiss"], ["Show terminal ↗", "show"]] : [["Dismiss", "dismiss"]]) : [["Close", "dismiss"]])
+                    Rectangle {
+                      required property var modelData
+                      Layout.preferredHeight: 26
+                      Layout.preferredWidth: ibText.implicitWidth + 20
+                      radius: 5
+                      color: ibMouse.containsMouse ? root.faint : "transparent"
+                      border.width: 1; border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.25)
+                      Text { id: ibText; anchors.centerIn: parent; textFormat: Text.PlainText; text: modelData[0]; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 10 }
+                      MouseArea { id: ibMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          if (modelData[1] === "toggle") { if (root.install.hidden) root.installShow(); else root.installHide() }
+                          else if (modelData[1] === "show") root.installShow()
+                          else root.installDismiss()
+                        } }
+                    }
+                  }
+                }
+              }
+
+            }
+
             ColumnLayout {
               id: accordion
+              visible: root.qsSection !== "install"
               Layout.fillWidth: true
               spacing: 2
 
@@ -7216,6 +7583,7 @@ Item {
                 }
                 Caption { text: "DNS" }
                 Segmented {
+                  label: "Provider"
                   options: [["DHCP", "DHCP"], ["Cloudflare", "Cloudflare"], ["Google", "Google"]]
                   current: root.dnsProvider
                   onPicked: function(v) { root.setDns(v) }
@@ -7272,10 +7640,11 @@ Item {
                 status: root.sink && root.sink.audio ? (root.sink.audio.muted ? "Muted" : Math.round(root.sink.audio.volume * 100) + "%") : "" }
               SectionBody {
                 visible: root.qsSection === "sound"
-                SliderRow { label: "OUT"; value: root.sink && root.sink.audio ? root.sink.audio.volume : 0; muted: !!root.sink && !!root.sink.audio && root.sink.audio.muted
+                Caption { text: "LEVELS" }
+                SliderRow { label: "Output"; value: root.sink && root.sink.audio ? root.sink.audio.volume : 0; muted: !!root.sink && !!root.sink.audio && root.sink.audio.muted
                   onMoved: function(v) { if (root.sink && root.sink.audio) root.sink.audio.volume = v }
                   onMuteClicked: if (root.sink && root.sink.audio) root.sink.audio.muted = !root.sink.audio.muted }
-                SliderRow { label: "MIC"; visible: !!root.source && !!root.source.audio; value: root.source && root.source.audio ? root.source.audio.volume : 0; muted: !!root.source && !!root.source.audio && root.source.audio.muted
+                SliderRow { label: "Mic"; visible: !!root.source && !!root.source.audio; value: root.source && root.source.audio ? root.source.audio.volume : 0; muted: !!root.source && !!root.source.audio && root.source.audio.muted
                   onMoved: function(v) { if (root.source && root.source.audio) root.source.audio.volume = v }
                   onMuteClicked: if (root.source && root.source.audio) root.source.audio.muted = !root.source.audio.muted }
                 Caption { text: "OUTPUT" }
@@ -7305,9 +7674,11 @@ Item {
                     readonly property bool sel: modelData.name === root.selName
                     readonly property bool lastOn: !modelData.disabled && root.enabledDisplays.length < 2
                     Layout.fillWidth: true
-                    implicitHeight: 38
-                    radius: 5
-                    color: sel ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12) : (dMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent")
+                    implicitHeight: 40
+                    radius: 6
+                    color: dMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent"
+                    border.width: sel ? 2 : 1
+                    border.color: sel ? root.foreground : root.faint
                     MouseArea { id: dMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.selDisplay = dRow.modelData.name }
                     RowLayout {
                       anchors.fill: parent
@@ -7322,15 +7693,25 @@ Item {
                         Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: dRow.modelData.name + " · " + root.displaySummary(dRow.modelData) + (dRow.modelData.focused ? " · focused" : ""); color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; elide: Text.ElideRight }
                       }
                       // on/off (the last display that's on can't be turned off)
-                      Rectangle {
+                      Row {
                         visible: root.displays.length > 1
                         opacity: dRow.lastOn ? 0.35 : 1
-                        Layout.preferredWidth: 30; Layout.preferredHeight: 16; radius: 8
-                        color: !dRow.modelData.disabled ? root.foreground : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16)
-                        Rectangle { width: 12; height: 12; radius: 6; anchors.verticalCenter: parent.verticalCenter; x: !dRow.modelData.disabled ? parent.width - width - 2 : 2
-                          color: !dRow.modelData.disabled ? root.background : root.dim }
-                        MouseArea { anchors.fill: parent; anchors.margins: -4; cursorShape: dRow.lastOn ? Qt.ArrowCursor : Qt.PointingHandCursor
-                          onClicked: if (!dRow.lastOn) root.setDisplayEnabled(dRow.modelData.name, dRow.modelData.disabled) }
+                        Repeater {
+                          model: [[true, "on"], [false, "off"]]
+                          Row {
+                            required property var modelData
+                            required property int index
+                            Text { visible: index > 0; textFormat: Text.PlainText; text: " / "; color: root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
+                            Text {
+                              readonly property bool sel: !dRow.modelData.disabled === modelData[0]
+                              textFormat: Text.PlainText; text: modelData[1]
+                              color: sel || dOpt.containsMouse ? root.foreground : root.dim
+                              font.family: root.fontFamily; font.pixelSize: 11; font.bold: sel; font.underline: sel
+                              MouseArea { id: dOpt; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: dRow.lastOn ? Qt.ArrowCursor : Qt.PointingHandCursor
+                                onClicked: if (!parent.sel && !dRow.lastOn) root.setDisplayEnabled(dRow.modelData.name, modelData[0]) }
+                            }
+                          }
+                        }
                       }
                     }
                   }
@@ -7386,30 +7767,30 @@ Item {
                     }
                   }
                 }
-                Caption { text: "BRIGHTNESS"; visible: root.brightness >= 0 }
-                SliderRow { visible: root.brightness >= 0; label: ""; value: Math.max(0, root.brightness) / 100; onMoved: function(v) { root.setBrightness(v) } }
-                Caption { text: "RESOLUTION" + (root.modeSize ? " · " + root.modeSize : ""); visible: root.resolutionOptions.length > 1 }
+                Caption { text: "PICTURE" + (root.selName ? " · " + root.selName : "") }
+                SliderRow { visible: root.brightness >= 0; label: "Brightness"; value: Math.max(0, root.brightness) / 100; onMoved: function(v) { root.setBrightness(v) } }
                 Segmented {
+                  label: "Resolution"
                   visible: root.resolutionOptions.length > 1
                   options: root.resolutionOptions
                   current: root.modeRes
                   onPicked: function(v) { root.setResolution(v) }
                 }
-                Caption { text: "REFRESH RATE" + (root.resolutionOptions.length > 1 ? "" : (root.modeSize ? " · " + root.modeSize : "")); visible: root.refreshOptions.length > 0 }
                 Segmented {
+                  label: "Refresh"
                   visible: root.refreshOptions.length > 0
                   options: root.refreshOptions
                   current: root.refreshCurrent
                   onPicked: function(v) { root.setRefresh(v) }
                 }
-                Caption { text: "SCALE" }
                 Segmented {
+                  label: "Scale"
                   options: [["1", "1×"], ["1.25", "1.25×"], ["1.6", "1.6×"], ["2", "2×"]]
                   current: root.displayScale
                   onPicked: function(v) { root.setScale(v) }
                 }
-                Caption { text: "ROTATION" }
                 Segmented {
+                  label: "Rotation"
                   options: [["0", "0°"], ["1", "90°"], ["2", "180°"], ["3", "270°"]]
                   current: root.displayTransform
                   onPicked: function(v) { root.setTransform(v) }
@@ -7455,23 +7836,8 @@ Item {
                     MouseArea { id: apMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: root.displayPending ? Qt.PointingHandCursor : Qt.ArrowCursor; onClicked: root.applyDisplayChanges() }
                   }
                 }
-                Caption { text: "TEXT SIZE" }
-                RowLayout {
-                  Layout.fillWidth: true
-                  spacing: 6
-                  Repeater {
-                    model: [["−", -1], ["+", 1]]
-                    Rectangle {
-                      required property var modelData
-                      Layout.preferredWidth: 30; Layout.preferredHeight: 26; radius: 5
-                      color: tsMouse.containsMouse ? root.faint : "transparent"
-                      border.width: 1; border.color: root.faint
-                      Text { anchors.centerIn: parent; text: modelData[0]; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 13 }
-                      MouseArea { id: tsMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setTextPx(root.textPx + modelData[1]) }
-                    }
-                  }
-                  Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: root.textPx + " px"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11 }
-                }
+                Caption { text: "EVERY DISPLAY" }
+                StepRow { label: "Text size"; value: root.textPx; step: 1; min: 9; max: 20; suffix: " px"; onChanged: function(v) { root.setTextPx(v) } }
                 SwitchRow { label: "Night light"; on: root.qsState.night; onToggled: root.qsToggle("night") }
                 MenuLinkRow { itemId: "setup.config.hyprsunset"; text: "Night light settings" }
                 MenuLinkRow { itemId: "setup.monitors"; text: "Monitor setup" }
@@ -7482,27 +7848,28 @@ Item {
               SectionHeader { sectionId: "input"; icon: "\uf11c"; label: "Keyboard & mouse" }
               SectionBody {
                 visible: root.qsSection === "input"
-                Caption { text: "KEYBOARD · REPEAT" }
-                SliderRow { label: "RATE"; value: (root.inputVal("repeat_rate", 40) - 10) / 70; valueText: root.inputVal("repeat_rate", 40) + "/s"
-                  onMoved: function(v) { root.setInput("repeat_rate", Math.round(10 + v * 70)) } }
-                SliderRow { label: "DELAY"; value: (root.inputVal("repeat_delay", 250) - 150) / 650; valueText: root.inputVal("repeat_delay", 250) + " ms"
-                  onMoved: function(v) { root.setInput("repeat_delay", Math.round((150 + v * 650) / 10) * 10) } }
+                Caption { text: "KEYBOARD" }
+                StepRow { label: "Repeat rate"; value: root.inputVal("repeat_rate", 40); step: 5; min: 10; max: 80; suffix: " /s"
+                  onChanged: function(v) { root.setInput("repeat_rate", Math.round(v)) } }
+                StepRow { label: "Repeat delay"; value: root.inputVal("repeat_delay", 250); step: 25; min: 150; max: 800; suffix: " ms"
+                  onChanged: function(v) { root.setInput("repeat_delay", Math.round(v)) } }
                 SwitchRow { label: "Num Lock on at login"; on: root.inputVal("numlock_by_default", true) === true; onToggled: root.setInput("numlock_by_default", !(root.inputVal("numlock_by_default", true) === true)) }
                 MenuLinkRow { itemId: "setup.typing.keyboard"; text: "Keyboard layouts" }
                 MenuLinkRow { itemId: "setup.typing.input"; text: "Input methods" }
                 MenuLinkRow { itemId: "setup.language" }
                 Caption { text: "MOUSE" }
-                SliderRow { label: "SPEED"; value: (Number(root.inputVal("sensitivity", 0)) + 1) / 2
+                SliderRow { label: "Speed"; value: (Number(root.inputVal("sensitivity", 0)) + 1) / 2
                   valueText: (Number(root.inputVal("sensitivity", 0)) > 0 ? "+" : "") + Number(root.inputVal("sensitivity", 0)).toFixed(2)
                   onMoved: function(v) { root.setInput("sensitivity", Math.round((v * 2 - 1) * 20) / 20) } }
                 Segmented {
                   readonly property string acc: String(root.inputVal("accel_profile", ""))
-                  options: [["adaptive", "Acceleration"], ["flat", "Flat (raw)"]]
+                  label: "Acceleration"
+                  options: [["adaptive", "adaptive"], ["flat", "flat"]]
                   current: acc === "flat" ? "flat" : "adaptive"
                   onPicked: function(v) { root.setInput("accel_profile", v === "flat" ? "flat" : "default") }
                 }
-                SliderRow { label: "SCROLL"; value: (Number(root.inputVal("scroll_factor", 1)) - 0.2) / 2.8; valueText: Number(root.inputVal("scroll_factor", 1)).toFixed(1) + "×"
-                  onMoved: function(v) { root.setInput("scroll_factor", Math.round((0.2 + v * 2.8) * 10) / 10) } }
+                StepRow { label: "Scroll speed"; value: Number(Number(root.inputVal("scroll_factor", 1)).toFixed(1)); step: 0.1; min: 0.2; max: 3; suffix: "×"
+                  onChanged: function(v) { root.setInput("scroll_factor", Math.round(v * 10) / 10) } }
                 SwitchRow { label: "Natural scrolling"; on: root.inputVal("natural_scroll", false) === true; onToggled: root.setInput("natural_scroll", !(root.inputVal("natural_scroll", false) === true)) }
                 Caption { text: "TOUCHPAD"; visible: root.inputVal("touchpad", false) === true }
                 ColumnLayout {
@@ -7512,8 +7879,8 @@ Item {
                   SwitchRow { label: "Tap to click"; on: root.inputVal("touchpad.tap_to_click", true) === true; onToggled: root.setInput("touchpad.tap_to_click", !(root.inputVal("touchpad.tap_to_click", true) === true)) }
                   SwitchRow { label: "Natural scrolling"; on: root.inputVal("touchpad.natural_scroll", false) === true; onToggled: root.setInput("touchpad.natural_scroll", !(root.inputVal("touchpad.natural_scroll", false) === true)) }
                   SwitchRow { label: "Off while typing"; on: root.inputVal("touchpad.disable_while_typing", true) === true; onToggled: root.setInput("touchpad.disable_while_typing", !(root.inputVal("touchpad.disable_while_typing", true) === true)) }
-                  SliderRow { label: "SCROLL"; value: (Number(root.inputVal("touchpad.scroll_factor", 0.4)) - 0.1) / 1.9; valueText: Number(root.inputVal("touchpad.scroll_factor", 0.4)).toFixed(1) + "×"
-                    onMoved: function(v) { root.setInput("touchpad.scroll_factor", Math.round((0.1 + v * 1.9) * 10) / 10) } }
+                  StepRow { label: "Scroll speed"; value: Number(Number(root.inputVal("touchpad.scroll_factor", 0.4)).toFixed(1)); step: 0.1; min: 0.1; max: 2; suffix: "×"
+                    onChanged: function(v) { root.setInput("touchpad.scroll_factor", Math.round(v * 10) / 10) } }
                 }
                 Caption { text: "CONFIG" }
                 MenuLinkRow { itemId: "setup.keybindings" }
@@ -7604,8 +7971,8 @@ Item {
               SectionHeader { sectionId: "power"; icon: ""; label: "Power"; status: root.profileLabel(root.qsState.profile) + (root.batteryPresent ? " · " + root.batteryPct + "%" : "") }
               SectionBody {
                 visible: root.qsSection === "power"
-                Caption { text: "POWER MODE"; visible: root.qsState.profile !== "" }
                 Segmented {
+                  label: "Power mode"
                   visible: root.qsState.profile !== ""
                   options: [["power-saver", "Saver"], ["balanced", "Balanced"], ["performance", "Performance"]]
                   current: root.qsState.profile
@@ -7638,38 +8005,60 @@ Item {
             }
 
             // ---- shared pieces of the sections ----------------------------------
-            component Caption: Text {
+            // a group heading inside a section: small caps text and a hairline to the edge
+            component Caption: RowLayout {
+              id: cap
+              property string text: ""
               Layout.fillWidth: true
               Layout.topMargin: 4
-              textFormat: Text.PlainText
-              color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1
+              spacing: 8
+              Text { textFormat: Text.PlainText; text: cap.text; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
+              Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.faint }
             }
-            component Segmented: RowLayout {
+            // pick one: "Label ...... a / b / c", the current one bold and underlined
+            // (the options go under the label when they don't fit beside it)
+            component Segmented: Item {
               id: seg
+              property string label: ""
               property var options: []      // [[value, label], ...]
               property string current: ""
               signal picked(string value)
               Layout.fillWidth: true
-              spacing: 4
-              Repeater {
-                model: seg.options
-                Rectangle {
-                  required property var modelData
-                  readonly property bool sel: seg.current === modelData[0]
-                  Layout.fillWidth: true
-                  Layout.preferredHeight: 26
-                  radius: 5
-                  color: sel ? root.foreground : (sgMouse.containsMouse ? root.faint : "transparent")
-                  border.width: sel ? 0 : 1
-                  border.color: root.faint
-                  Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: modelData[1]; color: parent.sel ? root.background : root.dim; font.family: root.fontFamily; font.pixelSize: 10; font.bold: parent.sel }
-                  MouseArea { id: sgMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: seg.picked(modelData[0]) }
+              readonly property bool stacked: seg.label !== "" && segLabel.implicitWidth + 12 + segOpts.implicitWidth > width
+              implicitHeight: stacked ? segLabel.implicitHeight + segOpts.implicitHeight + 4 : Math.max(22, segOpts.implicitHeight)
+              Text {
+                id: segLabel
+                visible: seg.label !== ""
+                y: seg.stacked ? 0 : (parent.height - height) / 2
+                width: Math.min(implicitWidth, parent.width)
+                elide: Text.ElideRight
+                textFormat: Text.PlainText; text: seg.label; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11
+              }
+              Row {
+                id: segOpts
+                x: seg.label === "" || seg.stacked ? (seg.stacked ? parent.width - width : 0) : parent.width - width
+                y: seg.stacked ? segLabel.implicitHeight + 4 : (parent.height - height) / 2
+                Repeater {
+                  model: seg.options
+                  Row {
+                    required property var modelData
+                    required property int index
+                    Text { visible: index > 0; textFormat: Text.PlainText; text: " / "; color: root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
+                    Text {
+                      readonly property bool sel: seg.current === modelData[0]
+                      textFormat: Text.PlainText; text: modelData[1]
+                      color: sel || sgMouse.containsMouse ? root.foreground : root.dim
+                      font.family: root.fontFamily; font.pixelSize: 11; font.bold: sel; font.underline: sel
+                      MouseArea { id: sgMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: seg.picked(modelData[0]) }
+                    }
+                  }
                 }
               }
             }
 
             Rectangle {
               id: updBtn
+              visible: root.qsSection !== "install"
               readonly property bool ready: Number(root.updateCount) > 0 && !root.updating
               readonly property bool busy: root.updating || root.updateCount === ""
               Layout.fillWidth: true
