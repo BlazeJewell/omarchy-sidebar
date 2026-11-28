@@ -79,10 +79,18 @@ hl.on("window.open", function(window)
   local mx = mon and (mon.x or xy(mon.position))
   local rl = mon and type(mon.reserved) == "table" and (mon.reserved.left or mon.reserved[1]) or 0
   local parked, fallback = {}, {}
+  local area = nil   -- the space the leaving windows filled: the new window's tile
   for _, other in ipairs(others) do
     local w = "address:" .. other.address
     local ax, ay = xy(other.at)
     local aw, ah = xy(other.size)
+    if ax and ay and aw and ah then
+      if not area then area = { x1 = ax, y1 = ay, x2 = ax + aw, y2 = ay + ah }
+      else
+        area.x1 = math.min(area.x1, ax); area.y1 = math.min(area.y1, ay)
+        area.x2 = math.max(area.x2, ax + aw); area.y2 = math.max(area.y2, ay + ah)
+      end
+    end
     hl.dispatch(hl.dsp.window.set_prop({ prop = "no_anim", value = "1", window = w }))
     hl.dispatch(hl.dsp.window.float({ action = "on", window = w }))
     if aw and ah and ax and ay and mx then
@@ -99,6 +107,24 @@ hl.on("window.open", function(window)
     else
       table.insert(fallback, other.address)
     end
+  end
+  -- The leaving windows are floating now, and floating windows draw above tiled
+  -- ones, so the new window would slide in underneath them. Float it too, at the
+  -- very tile it's getting, on top; once the slide is over it goes back into the
+  -- layout (same size and place, so nothing moves).
+  if #parked > 0 and area and (window.fullscreen or 0) == 0 then
+    local nw = "address:" .. window.address
+    hl.dispatch(hl.dsp.window.float({ action = "on", window = nw }))
+    hl.dispatch(hl.dsp.window.resize({ x = area.x2 - area.x1, y = area.y2 - area.y1, window = nw }))
+    hl.dispatch(hl.dsp.window.move({ x = area.x1, y = area.y1, window = nw }))
+    hl.dispatch(hl.dsp.window.alter_zorder({ mode = "top", window = nw }))
+    hl.timer(function()
+      hl.dispatch(hl.dsp.window.set_prop({ prop = "no_anim", value = "1", window = nw }))
+      hl.dispatch(hl.dsp.window.float({ action = "off", window = nw }))
+      hl.timer(function()
+        hl.dispatch(hl.dsp.window.set_prop({ prop = "no_anim", value = "unset", window = nw }))
+      end, { timeout = 50, type = "oneshot" })
+    end, { timeout = 450, type = "oneshot" })
   end
   if #parked > 0 then
     hl.timer(function()

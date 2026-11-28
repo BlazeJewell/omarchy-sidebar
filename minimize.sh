@@ -46,7 +46,12 @@ read -r mx rl active < <(jq -r '(first(.mon[] | select(.focused == true)) | "\(.
 ws=$(awk 'NR == 1 { print $2 }' <<<"$info")
 
 batch=() hide=() unanim=() addrs=()
+gx1="" gy1="" gx2="" gy2=""   # the space the tiled ones filled (restore.sh slides the next app into it, on top)
 while read -r a wsid ax ay aw ah fl; do
+  if [[ $fl != true ]]; then
+    [[ -z $gx1 || $ax -lt $gx1 ]] && gx1=$ax; [[ -z $gy1 || $ay -lt $gy1 ]] && gy1=$ay
+    [[ -z $gx2 || $((ax + aw)) -gt $gx2 ]] && gx2=$((ax + aw)); [[ -z $gy2 || $((ay + ah)) -gt $gy2 ]] && gy2=$((ay + ah))
+  fi
   w="window = \"address:$a\""
   addrs+=("$a")
   # Float a tiled window without it moving or changing size: animations off
@@ -79,6 +84,8 @@ done <<<"$info"
 # window (and the next app opened doesn't join it).
 [[ -z $then && " ${addrs[*]} " == *" $active "* && $ws =~ ^[0-9]+$ && $ws -ge 1 ]] && unanim+=("dispatch hl.dsp.focus({ workspace = \"$ws\" })")
 
+[[ -n $gx1 ]] && printf '%s %s %s %s %s %s\n' "$ws" "$gx1" "$gy1" "$((gx2 - gx1))" "$((gy2 - gy1))" "$(date +%s%N)" \
+  >"${XDG_RUNTIME_DIR:-/tmp}/jake-sidebar-tile-area"
 [[ -n $then ]] && batch+=("$then")
 hbatch "${batch[@]}"
 # Hidden as soon as its right edge is behind the sidebar (~200 ms into the
